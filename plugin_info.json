@@ -1,0 +1,8 @@
+{
+  "name": "Prompt Studio",
+  "version": "1.0.0",
+  "description": "Structured prompt builder with reference asset insertion, dialogue tags, and retention markers.",
+  "author": "Community",
+  "type": "extension",
+  "wan2gp_version": "12.50"
+}
