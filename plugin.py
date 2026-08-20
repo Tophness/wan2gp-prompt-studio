@@ -102,7 +102,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "2.5.2"
+        self.version = "1.0.0"
         self.description = "Full-Reference rich prompt studio with live container media detection and hover previews for MiniMax H3 Ref2VA."
         self.type = ["extension"]
 
