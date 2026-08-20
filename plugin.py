@@ -102,7 +102,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.0"
+        self.version = "1.0.1"
         self.description = "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc."
         self.type = ["extension"]
 
@@ -1289,7 +1289,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             # --- Synchronized Prompt Handling ---
             section_inputs = [sec_subject_defs, sec_summary, sec_retention, sec_detailed, sec_soundscape, sec_music]
 
-            # 1. 6 Section textboxes change -> Assembly to Main Prompt
+            # 1. 6 Section textboxes change -> Assemble to Main Prompt
             if self.main_prompt is not None:
                 for sec in section_inputs:
                     sec.input(
@@ -1299,13 +1299,25 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         show_progress="hidden"
                     )
 
-            # 2. Main Prompt direct user input -> Parse into 6 Sections
-            def on_external_main_prompt_change(raw_val, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
+            # 2. Main Prompt changes (either via typing or loaded from file/preset) -> Split into 6 Sections
+            def on_external_main_prompt_change(raw_val, state, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
+                # Fallback to reading directly from state if raw_val hasn't populated yet
+                prompt_text = raw_val or ""
+                if isinstance(state, dict):
+                    model_type = state.get("model_type", "")
+                    all_settings = state.get("all_settings", {})
+                    if model_type in all_settings and all_settings[model_type].get("prompt"):
+                        prompt_text = all_settings[model_type].get("prompt")
+                    elif state.get("prompt"):
+                        prompt_text = state.get("prompt")
+
                 current_assembled = assemble_multisection_prompt(s_def, s_sum, s_ret, s_det, s_snd, s_mus)
-                if (raw_val or "").strip() == current_assembled.strip():
+                
+                # If content is already identical (e.g. from user typing in sections), ignore to preserve cursor
+                if prompt_text.strip() == current_assembled.strip():
                     return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
-                parsed = parse_multisection_prompt(raw_val)
+                parsed = parse_multisection_prompt(prompt_text)
                 return (
                     parsed["subject_definitions"],
                     parsed["summary"],
@@ -1315,10 +1327,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     parsed["non_diegetic_music"],
                 )
 
+            # Listen to .change on main_prompt so file uploads and presets automatically split
             if self.main_prompt is not None:
-                self.main_prompt.input(
+                self.main_prompt.change(
                     fn=on_external_main_prompt_change,
-                    inputs=[self.main_prompt] + section_inputs,
+                    inputs=[self.main_prompt, self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1333,11 +1346,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => { window.updateRichEditorsFromTextareas(false); window.refreshActiveReferencesBar(); }"
                 )
 
-            # Presets or file load refresh event (Load Settings From Media File / Json / Zip)
+            # Form reload / file load trigger
             if self.refresh_form_trigger is not None:
                 self.refresh_form_trigger.change(
                     fn=on_external_main_prompt_change,
-                    inputs=[self.main_prompt] + section_inputs if self.main_prompt is not None else section_inputs,
+                    inputs=[self.main_prompt if self.main_prompt is not None else gr.State(""), self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1349,7 +1362,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 250); }"
+                    js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 200); }"
                 )
 
             # Direct drop listener on the settings_file component
