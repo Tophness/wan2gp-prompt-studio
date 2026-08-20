@@ -1,7 +1,7 @@
 {
-  "name": "Prompt Studio",
+  "name": "MiniMax Ref2VA Prompt Studio",
   "version": "1.0.0",
-  "description": "Structured prompt builder with reference asset insertion, dialogue tags, and retention markers.",
+  "description": "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc.",
   "author": "Community",
   "type": "extension",
   "wan2gp_version": "12.50"

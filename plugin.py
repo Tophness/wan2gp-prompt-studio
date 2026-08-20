@@ -103,7 +103,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
         self.version = "1.0.0"
-        self.description = "Full-Reference rich prompt studio with live container media detection and hover previews for MiniMax H3 Ref2VA."
+        self.description = "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc."
         self.type = ["extension"]
 
     def setup_ui(self):
