@@ -1,9 +1,12 @@
 import gradio as gr
 import re
+import os
+import json
 from typing import Dict, Any, List
 from shared.utils.plugins import WAN2GPPlugin
 
 TARGET_MODEL_ARCHITECTURE = "minimax_h3_ref2va"
+SETTINGS_FILE_NAME = "settings.json"
 
 SECTION_KEYS = [
     "subject_definitions",
@@ -40,6 +43,41 @@ EXAMPLE_REWRITE = {
     "overall_soundscape": "Spacious nighttime station ambience, faint wind through ironwork, a soft paper-wing flutter crossing the stereo field, the synchronized spoken line, one heavy clockwork click, and a distant rail hum.",
     "non_diegetic_music": "A minimal celesta phrase of three notes, resolving softly as the clock moves."
 }
+
+DEFAULT_SETTINGS = {
+    "active_refs_display_mode": "text",  # "text" or "graphic"
+    "graphic_card_size": "medium",      # "small", "medium", "large"
+    "sync_from_combined_prompt": False,
+}
+
+
+def get_settings_path() -> str:
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(plugin_dir, SETTINGS_FILE_NAME)
+
+
+def load_settings() -> Dict[str, Any]:
+    path = get_settings_path()
+    if os.path.isfile(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    settings = DEFAULT_SETTINGS.copy()
+                    settings.update(data)
+                    return settings
+        except Exception as e:
+            print(f"[MiniMax Ref2VA Studio] Error reading settings: {e}")
+    return DEFAULT_SETTINGS.copy()
+
+
+def save_settings(settings: Dict[str, Any]) -> None:
+    path = get_settings_path()
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(settings, f, indent=4)
+    except Exception as e:
+        print(f"[MiniMax Ref2VA Studio] Error saving settings: {e}")
 
 
 def is_minimax_model(model_name: str, base_type: str = "") -> bool:
@@ -102,8 +140,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.1"
-        self.description = "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc."
+        self.version = "1.0.4"
+        self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
     def setup_ui(self):
@@ -129,6 +167,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             window._activeRef2VARichEditor = null;
             window._ref2vaSyncingFromGradio = false;
             window._ref2vaHidePreviewTimer = null;
+            window._ref2vaCurrentPreviewTag = null;
+            window._ref2vaSettings = {
+                active_refs_display_mode: 'text',
+                graphic_card_size: 'medium',
+                sync_from_combined_prompt: false
+            };
 
             function escapeHtml(str) {
                 return (str || '')
@@ -150,8 +194,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 cancelHidePreview();
                 window._ref2vaHidePreviewTimer = setTimeout(() => {
                     const popup = document.getElementById('ref2va-floating-preview-popup');
-                    if (popup) popup.remove();
-                }, 280);
+                    if (popup) {
+                        popup.remove();
+                        window._ref2vaCurrentPreviewTag = null;
+                    }
+                }, 320);
             }
 
             window.tagToInlineBadgeHtml = function(tagStr) {
@@ -335,7 +382,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 let imgs = Array.from(container.querySelectorAll('.thumbnails img, button.thumbnail-item img, .grid-wrap img, .thumbnail-item img'));
                 if (imgs.length === 0) {
                     imgs = Array.from(container.querySelectorAll('img')).filter(i => {
-                        return !i.closest('.preview') && !i.closest('#gallery');
+                        return !i.closest('.preview') && !i.closest('#gallery') && !i.closest('#plugin_guides') && !i.closest('.tutorial');
                     });
                 }
                 const uniqueSrcs = [];
@@ -355,6 +402,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             function findContainerByKeywords(keywords) {
                 const labels = Array.from(document.querySelectorAll('.label, label, span[data-testid="block-label"], .gr-form-label, span.block, .form-label'));
                 for (const lbl of labels) {
+                    if (lbl.closest('#plugin_guides') || lbl.closest('.tutorial') || lbl.closest('#gallery')) continue;
                     const text = (lbl.textContent || '').toLowerCase();
                     const matched = keywords.some(kw => text.includes(kw.toLowerCase()));
                     if (matched) {
@@ -389,18 +437,45 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         return { src: endImgs[0], type: 'image', desc: 'End Image Anchor' };
                     }
                 } else if (mediaType === 'video') {
-                    const allVideos = Array.from(document.querySelectorAll('video')).filter(v => {
-                        return !v.closest('#gallery') && !v.closest('#video_images') && !v.closest('.ref2va-preview-card');
-                    });
+                    const srcContainer = findContainerByKeywords(['video to continue', 'video source', 'source video']);
+                    const guideContainer = findContainerByKeywords(['control video', 'video guide']);
+                    const guide2Container = findContainerByKeywords(['control video 2', 'video guide 2']);
 
-                    let targetVideo = (slotNum === 1 && allVideos.length >= 1) ? allVideos[0] : (slotNum === 2 && allVideos.length >= 2 ? allVideos[1] : (slotNum === 3 && allVideos.length >= 3 ? allVideos[2] : null));
-                    if (targetVideo) {
-                        const src = targetVideo.currentSrc || targetVideo.src || (targetVideo.querySelector('source') ? targetVideo.querySelector('source').src : null);
-                        if (src) return { src: src, type: 'video' };
+                    const validContainers = [srcContainer, guideContainer, guide2Container].filter(Boolean);
+                    const discoveredVideos = [];
+
+                    for (const cont of validContainers) {
+                        if (cont.closest('#plugin_guides') || cont.closest('.tutorial-video')) continue;
+                        const vids = Array.from(cont.querySelectorAll('video')).filter(v => {
+                            return !v.closest('#gallery') && !v.closest('.ref2va-preview-card') && !v.closest('.ref2va-active-refs-mount');
+                        });
+                        for (const v of vids) {
+                            const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                            if (src && !src.includes('tutorial') && !src.includes('guide')) {
+                                discoveredVideos.push({ src: src, type: 'video' });
+                            }
+                        }
+                    }
+
+                    if (discoveredVideos.length === 0) {
+                        const genTab = document.querySelector('#media_gen') || document.querySelector('#tab_media_gen') || document.body;
+                        const vids = Array.from(genTab.querySelectorAll('#video_input video, #video_input2 video')).filter(v => {
+                            return !v.closest('#plugin_guides') && !v.closest('#gallery');
+                        });
+                        for (const v of vids) {
+                            const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                            if (src && !src.includes('tutorial')) {
+                                discoveredVideos.push({ src: src, type: 'video' });
+                            }
+                        }
+                    }
+
+                    if (slotNum >= 1 && slotNum <= discoveredVideos.length) {
+                        return discoveredVideos[slotNum - 1];
                     }
                 } else if (mediaType === 'audio') {
                     const allAudioBlocks = Array.from(document.querySelectorAll('.audio-container, [data-testid="audio"], .gr-audio')).filter(el => {
-                        return !el.closest('#gallery') && !el.closest('#audio') && !el.closest('.ref2va-preview-card');
+                        return !el.closest('#gallery') && !el.closest('#audio') && !el.closest('.ref2va-preview-card') && !el.closest('.ref2va-active-refs-mount') && !el.closest('#plugin_guides');
                     });
 
                     const targetBlock = allAudioBlocks[slotNum - 1];
@@ -415,7 +490,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     }
 
                     const allAudios = Array.from(document.querySelectorAll('audio')).filter(a => {
-                        return !a.closest('#gallery') && !a.closest('#audio') && !a.closest('.ref2va-preview-card');
+                        return !a.closest('#gallery') && !a.closest('#audio') && !a.closest('.ref2va-preview-card') && !a.closest('.ref2va-active-refs-mount') && !a.closest('#plugin_guides');
                     });
                     const targetAudio = allAudios[slotNum - 1];
                     if (targetAudio) {
@@ -428,9 +503,15 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             window.showRef2VAPreview = function(tagStr, triggerEl, event) {
                 cancelHidePreview();
+                const rawTag = tagStr.trim();
 
                 const existing = document.getElementById('ref2va-floating-preview-popup');
+                if (existing && window._ref2vaCurrentPreviewTag === rawTag) {
+                    return;
+                }
                 if (existing) existing.remove();
+
+                window._ref2vaCurrentPreviewTag = rawTag;
 
                 const popup = document.createElement('div');
                 popup.id = 'ref2va-floating-preview-popup';
@@ -442,7 +523,10 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 const closeBtn = document.createElement('button');
                 closeBtn.className = 'ref2va-popup-close-btn';
                 closeBtn.innerHTML = '×';
-                closeBtn.onclick = () => popup.remove();
+                closeBtn.onclick = () => {
+                    popup.remove();
+                    window._ref2vaCurrentPreviewTag = null;
+                };
                 popup.appendChild(closeBtn);
 
                 const header = document.createElement('div');
@@ -451,8 +535,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 const body = document.createElement('div');
                 body.className = 'ref2va-popup-body';
-
-                const rawTag = tagStr.trim();
 
                 if (/^<Picture\s+\d+>/i.test(rawTag)) {
                     const num = parseInt(rawTag.match(/\d+/)[0], 10);
@@ -477,9 +559,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         v.src = media.src;
                         v.controls = true;
                         v.autoplay = true;
+                        v.preload = "auto";
                         v.loop = true;
                         v.className = 'ref2va-preview-media';
                         body.appendChild(v);
+                        v.play().catch(() => {});
                     } else {
                         body.innerHTML = `<span class="ref2va-popup-muted">No video loaded in slot &lt;Video ${num}&gt;.</span>`;
                     }
@@ -493,8 +577,10 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         a.src = media.src;
                         a.controls = true;
                         a.autoplay = true;
+                        a.preload = "auto";
                         a.style.width = '100%';
                         body.appendChild(a);
+                        a.play().catch(() => {});
                     } else {
                         body.innerHTML = `<span class="ref2va-popup-muted">No audio track loaded for &lt;Audio ${num}&gt;. Upload an audio file above.</span>`;
                     }
@@ -609,10 +695,13 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 const rect = triggerEl.getBoundingClientRect();
                 const popupRect = popup.getBoundingClientRect();
-                let top = rect.top - popupRect.height - 8;
+                
+                let top = rect.top - popupRect.height - 12;
                 let left = rect.left + (rect.width / 2) - (popupRect.width / 2);
 
-                if (top < 10) top = rect.bottom + 8;
+                if (top < 10) {
+                    top = rect.bottom + 12;
+                }
                 if (left < 10) left = 10;
                 if (left + popupRect.width > window.innerWidth - 10) {
                     left = window.innerWidth - popupRect.width - 10;
@@ -624,47 +713,131 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             document.addEventListener('click', function(e) {
                 const popup = document.getElementById('ref2va-floating-preview-popup');
-                if (popup && !popup.contains(e.target) && !e.target.closest('.ref2va-inline-badge')) {
+                if (popup && !popup.contains(e.target) && !e.target.closest('.ref2va-inline-badge') && !e.target.closest('.ref2va-btn-ref') && !e.target.closest('.ref2va-graphic-card')) {
                     popup.remove();
+                    window._ref2vaCurrentPreviewTag = null;
                 }
             });
 
-            // Live Active Reference Bar Updater
+            // Live Active Reference Bar Generator (No Hover Popups on Graphic Mode)
             window.refreshActiveReferencesBar = function() {
-                let picCount = 0;
-                let vidCount = 0;
-                let audCount = 0;
+                const barContainer = document.querySelector('.ref2va-active-refs-mount');
+                if (!barContainer) return;
+
+                const settingsInput = document.querySelector('.ref2va-settings-json-input textarea');
+                if (settingsInput && settingsInput.value) {
+                    try {
+                        window._ref2vaSettings = JSON.parse(settingsInput.value);
+                    } catch(e) {}
+                }
+
+                const displayMode = window._ref2vaSettings.active_refs_display_mode || 'text';
+                const cardSize = window._ref2vaSettings.graphic_card_size || 'medium';
+
+                const detected = [];
 
                 for (let i = 1; i <= 6; i++) {
-                    if (window.findWanGPMediaElement('picture', i)) picCount = i;
+                    const m = window.findWanGPMediaElement('picture', i);
+                    if (m && m.src) {
+                        detected.push({ tag: `<Picture ${i}>`, label: `🖼️ <Picture ${i}>`, type: 'picture', num: i, media: m });
+                    }
                 }
                 for (let i = 1; i <= 3; i++) {
-                    if (window.findWanGPMediaElement('video', i)) vidCount = i;
+                    const m = window.findWanGPMediaElement('video', i);
+                    if (m && m.src) {
+                        detected.push({ tag: `<Video ${i}>`, label: `🎥 <Video ${i}>`, type: 'video', num: i, media: m });
+                    }
                 }
                 for (let i = 1; i <= 2; i++) {
-                    const a = window.findWanGPMediaElement('audio', i);
-                    if (a && a.src) audCount = i;
+                    const m = window.findWanGPMediaElement('audio', i);
+                    if (m && m.src) {
+                        detected.push({ tag: `<Audio ${i}>`, label: `🔊 <Audio ${i}>`, type: 'audio', num: i, media: m });
+                    }
                 }
 
-                const bar = document.querySelector('.ref2va-active-refs-bar');
-                if (bar) {
-                    const hasAny = (picCount + vidCount + audCount) > 0;
-                    bar.style.display = hasAny ? 'flex' : 'none';
-
-                    const p1 = bar.querySelector('.ref2va-dyn-pic1'); if (p1) p1.style.display = (picCount >= 1) ? 'inline-flex' : 'none';
-                    const p2 = bar.querySelector('.ref2va-dyn-pic2'); if (p2) p2.style.display = (picCount >= 2) ? 'inline-flex' : 'none';
-                    const p3 = bar.querySelector('.ref2va-dyn-pic3'); if (p3) p3.style.display = (picCount >= 3) ? 'inline-flex' : 'none';
-                    const p4 = bar.querySelector('.ref2va-dyn-pic4'); if (p4) p4.style.display = (picCount >= 4) ? 'inline-flex' : 'none';
-                    const p5 = bar.querySelector('.ref2va-dyn-pic5'); if (p5) p5.style.display = (picCount >= 5) ? 'inline-flex' : 'none';
-                    const p6 = bar.querySelector('.ref2va-dyn-pic6'); if (p6) p6.style.display = (picCount >= 6) ? 'inline-flex' : 'none';
-
-                    const v1 = bar.querySelector('.ref2va-dyn-vid1'); if (v1) v1.style.display = (vidCount >= 1) ? 'inline-flex' : 'none';
-                    const v2 = bar.querySelector('.ref2va-dyn-vid2'); if (v2) v2.style.display = (vidCount >= 2) ? 'inline-flex' : 'none';
-                    const v3 = bar.querySelector('.ref2va-dyn-vid3'); if (v3) v3.style.display = (vidCount >= 3) ? 'inline-flex' : 'none';
-
-                    const a1 = bar.querySelector('.ref2va-dyn-aud1'); if (a1) a1.style.display = (audCount >= 1) ? 'inline-flex' : 'none';
-                    const a2 = bar.querySelector('.ref2va-dyn-aud2'); if (a2) a2.style.display = (audCount >= 2) ? 'inline-flex' : 'none';
+                // Equality guard: stops infinite flashing cycle
+                const cacheKey = detected.map(d => `${d.tag}:${d.media.src}`).join('|') + `|mode:${displayMode}|size:${cardSize}`;
+                if (barContainer.dataset.renderedCache === cacheKey) {
+                    return;
                 }
+                barContainer.dataset.renderedCache = cacheKey;
+
+                if (detected.length === 0) {
+                    barContainer.innerHTML = '';
+                    barContainer.style.display = 'none';
+                    return;
+                }
+
+                barContainer.style.display = 'flex';
+                barContainer.innerHTML = '';
+
+                const labelSpan = document.createElement('span');
+                labelSpan.className = 'ref2va-tag-label';
+                labelSpan.style.color = '#10b981';
+                labelSpan.textContent = '⚡ Active References:';
+                barContainer.appendChild(labelSpan);
+
+                const itemsWrapper = document.createElement('div');
+                itemsWrapper.className = `ref2va-refs-items-wrapper mode-${displayMode} size-${cardSize}`;
+                barContainer.appendChild(itemsWrapper);
+
+                detected.forEach(item => {
+                    if (displayMode === 'graphic') {
+                        // Graphic Mode: Embedded media with clean Play-only controls; NO HOVER POPUP
+                        const card = document.createElement('div');
+                        card.className = `ref2va-graphic-card size-${cardSize}`;
+                        
+                        const mediaWrapper = document.createElement('div');
+                        mediaWrapper.className = 'ref2va-graphic-media-wrapper';
+
+                        if (item.type === 'picture') {
+                            const img = document.createElement('img');
+                            img.src = item.media.src;
+                            img.className = 'ref2va-graphic-img';
+                            mediaWrapper.appendChild(img);
+                            img.onclick = () => window.insertRef2VAText(item.tag);
+                        } else if (item.type === 'video') {
+                            const vid = document.createElement('video');
+                            vid.src = item.media.src;
+                            vid.controls = true;
+                            vid.autoplay = false;
+                            vid.preload = "metadata";
+                            vid.className = 'ref2va-graphic-video';
+                            mediaWrapper.appendChild(vid);
+                        } else if (item.type === 'audio') {
+                            const audBox = document.createElement('div');
+                            audBox.className = 'ref2va-graphic-audio-box';
+                            audBox.innerHTML = '<span style="font-size:16px;">🔊</span>';
+                            const aud = document.createElement('audio');
+                            aud.src = item.media.src;
+                            aud.controls = true;
+                            aud.autoplay = false;
+                            aud.preload = "metadata";
+                            aud.className = 'ref2va-graphic-audio-ctrl';
+                            audBox.appendChild(aud);
+                            mediaWrapper.appendChild(audBox);
+                        }
+
+                        const insertBtn = document.createElement('button');
+                        insertBtn.className = 'ref2va-graphic-insert-btn';
+                        insertBtn.textContent = item.tag;
+                        insertBtn.title = `Insert ${item.tag} into active section`;
+                        insertBtn.onclick = () => window.insertRef2VAText(item.tag);
+
+                        card.appendChild(mediaWrapper);
+                        card.appendChild(insertBtn);
+                        itemsWrapper.appendChild(card);
+                    } else {
+                        // Text Mode: Text button with live onhover preview popup
+                        const btn = document.createElement('button');
+                        btn.className = 'ref2va-btn ref2va-btn-ref';
+                        btn.textContent = item.label;
+                        btn.onclick = () => window.insertRef2VAText(item.tag);
+                        btn.onmouseenter = (e) => window.onTagMouseEnter(item.tag, btn, e);
+                        btn.onmouseleave = (e) => window.onTagMouseLeave(e);
+                        itemsWrapper.appendChild(btn);
+                    }
+                });
             };
 
             window.setupAllRichEditors = function() {
@@ -683,9 +856,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         richEditor.className = `ref2va-rich-editor ref2va-editor-${secName}`;
                         richEditor.contentEditable = 'true';
                         richEditor.spellcheck = false;
-
-                        const minLines = (secName === 'detailed_description') ? 7 : (secName.includes('soundscape') || secName.includes('music') ? 2 : 4);
-                        richEditor.style.minHeight = `${minLines * 24 + 16}px`;
 
                         richEditor.innerHTML = window.plainTextToRichHtml(textarea.value);
 
@@ -715,7 +885,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 const summary = document.createElement('summary');
                 summary.className = 'ref2va-raw-prompt-summary';
-                summary.innerHTML = '<span>📝 <strong>Combined Main Prompt</strong></span>';
+                summary.innerHTML = '<span>📝 <strong>Combined Main Prompt (Read/Write)</strong></span>';
                 drawer.appendChild(summary);
 
                 const content = document.createElement('div');
@@ -726,13 +896,20 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 column.dataset.ref2vaWrapped = 'true';
             };
 
-            // Enhanced Observer: Detects when new thumbnails or media are inserted anywhere in WanGP
             let _refObserverTimer = null;
-            const observer = new MutationObserver(() => {
+            const observer = new MutationObserver((mutations) => {
+                const isRelevant = mutations.some(m => {
+                    const target = m.target;
+                    if (!target || !target.closest) return true;
+                    if (target.closest('.ref2va-container') || target.closest('.ref2va-preview-card')) return false;
+                    return true;
+                });
+                if (!isRelevant) return;
+
                 if (_refObserverTimer) clearTimeout(_refObserverTimer);
                 _refObserverTimer = setTimeout(() => {
                     window.refreshActiveReferencesBar();
-                }, 150);
+                }, 200);
             });
             observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'value', 'class', 'href'] });
 
@@ -764,6 +941,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             initial_model = self.server_config.get("last_model_type", "")
         
         initial_visible = is_minimax_model(initial_model)
+        loaded_settings = load_settings()
 
         def create_studio_ui():
             custom_css = """
@@ -772,40 +950,174 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 border: 1px solid rgba(59, 130, 246, 0.35);
                 background: transparent;
                 border-radius: 8px;
-                padding: 12px 14px;
-                margin-top: 8px;
-                margin-bottom: 14px;
+                padding: 4px 10px 10px 10px !important;
+                margin-top: 0px !important;
+                margin-bottom: 10px;
             }
-            .ref2va-active-refs-bar {
+            .ref2va-container > div:has(> style),
+            .ref2va-container > .gr-html:empty {
+                display: none !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                height: 0 !important;
+            }
+            .ref2va-header-bar {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 6px;
+                padding: 0 !important;
+                margin: 0 0 4px 0 !important;
+                flex-wrap: wrap;
+            }
+            .ref2va-header-title {
+                font-size: 14px;
+                font-weight: 700;
+                color: #38bdf8;
+                margin: 0 !important;
+                padding: 0 !important;
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                line-height: 1.2;
+            }
+            .ref2va-settings-drawer {
+                border: 1px solid rgba(59, 130, 246, 0.45);
+                border-radius: 6px;
+                background: var(--input-background-fill, rgba(15, 23, 42, 0.7));
+                padding: 8px 10px;
+                margin-bottom: 6px;
+            }
+
+            .ref2va-active-refs-mount {
+                display: flex;
+                flex-direction: column;
+                gap: 4px;
+                margin-top: 0px;
+                margin-bottom: 6px;
+                padding: 5px 8px;
+                border-radius: 6px;
+                background: rgba(16, 185, 129, 0.06);
+                border: 1px dashed rgba(16, 185, 129, 0.35);
+            }
+            .ref2va-refs-items-wrapper {
                 display: flex;
                 flex-wrap: wrap;
-                gap: 6px;
+                gap: 8px;
                 align-items: center;
-                margin-top: 4px;
-                margin-bottom: 8px;
             }
+            .ref2va-refs-items-wrapper.mode-graphic {
+                align-items: flex-start;
+            }
+
+            .ref2va-graphic-card {
+                display: flex;
+                flex-direction: column;
+                border: 1px solid rgba(16, 185, 129, 0.5);
+                background: rgba(15, 23, 42, 0.85);
+                border-radius: 6px;
+                padding: 4px;
+                position: relative;
+                box-sizing: border-box;
+                overflow: hidden;
+                box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+            }
+            .ref2va-graphic-card.size-small { width: 95px; height: 95px; }
+            .ref2va-graphic-card.size-medium { width: 120px; height: 120px; }
+            .ref2va-graphic-card.size-large { width: 150px; height: 150px; }
+
+            .ref2va-graphic-media-wrapper {
+                width: 100%;
+                flex: 1;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+                border-radius: 4px;
+                background: #020617;
+                position: relative;
+            }
+            .ref2va-graphic-img {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+                cursor: pointer;
+                transition: transform 0.15s ease;
+            }
+            .ref2va-graphic-img:hover {
+                transform: scale(1.05);
+            }
+            .ref2va-graphic-video {
+                width: 100%;
+                height: 100%;
+                object-fit: cover;
+            }
+            .ref2va-graphic-audio-box {
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex-direction: column;
+                align-items: center;
+                justify-content: center;
+                gap: 2px;
+                padding: 2px;
+            }
+            .ref2va-graphic-audio-ctrl {
+                width: 96% !important;
+                height: 24px !important;
+                transform: scale(0.9);
+            }
+            .ref2va-graphic-insert-btn {
+                margin-top: 4px !important;
+                width: 100% !important;
+                font-size: 11px !important;
+                font-weight: 700 !important;
+                padding: 3px 6px !important;
+                text-align: center !important;
+                background: #065f46 !important;
+                color: #ffffff !important;
+                border: 1px solid #10b981 !important;
+                border-radius: 4px !important;
+                cursor: pointer !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
+                text-shadow: 0 1px 2px rgba(0,0,0,0.6) !important;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                line-height: 1.3;
+            }
+            .ref2va-graphic-insert-btn:hover {
+                background: #059669 !important;
+                color: #ffffff !important;
+                border-color: #34d399 !important;
+            }
+
             .ref2va-toolbar-group {
                 display: flex;
                 flex-wrap: wrap;
                 gap: 5px;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
                 align-items: center;
             }
             .ref2va-btn {
                 font-size: 11px !important;
-                padding: 3px 8px !important;
+                padding: 2px 7px !important;
                 min-width: unset !important;
-                height: 26px !important;
+                height: 25px !important;
             }
             .ref2va-btn-ref {
                 background: rgba(16, 185, 129, 0.15) !important;
-                border: 1px solid rgba(16, 185, 129, 0.45) !important;
+                border: 1px solid rgba(16, 185, 129, 0.5) !important;
                 color: #10b981 !important;
                 font-weight: 600 !important;
             }
+            .ref2va-btn-ref:hover {
+                background: rgba(16, 185, 129, 0.3) !important;
+                color: #ffffff !important;
+            }
             .ref2va-tag-label {
                 font-size: 11px;
-                font-weight: bold;
+                font-weight: 700;
                 color: #3b82f6;
                 margin-right: 4px;
             }
@@ -814,13 +1126,14 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 border: 1px solid var(--border-color-primary, rgba(128, 128, 128, 0.25)) !important;
                 border-radius: 6px !important;
                 background: transparent !important;
-                margin-bottom: 12px !important;
+                margin-top: 0px !important;
+                margin-bottom: 3px !important;
                 overflow: hidden !important;
             }
             .ref2va-raw-prompt-summary {
-                padding: 8px 12px !important;
+                padding: 5px 8px !important;
                 cursor: pointer !important;
-                font-size: 12.5px !important;
+                font-size: 11.5px !important;
                 font-weight: 600 !important;
                 color: inherit !important;
                 user-select: none !important;
@@ -828,23 +1141,35 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 align-items: center !important;
                 background: var(--background-fill-secondary, rgba(128, 128, 128, 0.08)) !important;
             }
-            .ref2va-raw-prompt-summary:hover {
-                color: #38bdf8 !important;
-            }
             .ref2va-raw-prompt-content {
-                padding: 8px 12px !important;
+                padding: 6px 8px !important;
             }
 
+            /* Symmetrical Uniform Grid for All 6 Prompt Sections */
+            .ref2va-grid-row {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 6px;
+            }
             .ref2va-rich-field-wrapper {
-                margin-bottom: 10px;
+                flex: 1 1 50%;
                 display: flex;
                 flex-direction: column;
+                margin-bottom: 0px !important;
+                gap: 2px !important;
+                padding: 0 !important;
+            }
+            .ref2va-rich-field-wrapper > .gr-html {
+                margin: 0 !important;
+                padding: 0 !important;
             }
             .ref2va-field-label {
-                font-size: 12px;
-                font-weight: 600;
+                font-size: 11.5px;
+                font-weight: 700;
                 color: inherit;
-                margin-bottom: 4px;
+                margin: 0 0 2px 0 !important;
+                padding: 0 !important;
+                line-height: 1.2;
             }
             .ref2va-rich-editor {
                 border: 1px solid var(--border-color-primary, rgba(128, 128, 128, 0.3));
@@ -853,21 +1178,31 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 background: var(--input-background-fill, rgba(15, 23, 42, 0.4));
                 color: var(--body-text-color, #e2e8f0);
                 font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-                font-size: 13px;
-                line-height: 1.5;
+                font-size: 12.5px;
+                line-height: 1.45;
                 white-space: pre-wrap;
                 word-wrap: break-word;
                 outline: none;
                 overflow-y: auto;
+                box-sizing: border-box;
                 transition: border-color 0.15s ease;
+                height: 160px !important;
+                min-height: 160px !important;
+                max-height: 160px !important;
             }
             .ref2va-rich-editor:focus {
                 border-color: #3b82f6;
                 box-shadow: 0 0 0 1px #3b82f6;
             }
 
-            .ref2va-hidden-gradio-input {
+            .ref2va-hidden-gradio-input,
+            .ref2va-hidden-gradio-input.gr-block,
+            .ref2va-hidden-gradio-input.block {
                 display: none !important;
+                margin: 0 !important;
+                padding: 0 !important;
+                height: 0 !important;
+                min-height: 0 !important;
             }
 
             .ref2va-inline-badge {
@@ -1024,13 +1359,40 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             with gr.Column(visible=initial_visible, elem_classes=["ref2va-container"]) as ref2va_main_container:
                 gr.HTML(custom_css)
                 
-                # Header Controls
-                with gr.Row():
-                    gr.Markdown("### 🎬 MiniMax H3 Ref2VA Prompt Studio")
+                # Header Bar (Zero Whitespace)
+                with gr.Row(elem_classes=["ref2va-header-bar"]):
+                    gr.HTML("<div class='ref2va-header-title'>🎬 MiniMax H3 Ref2VA Prompt Studio</div>")
                     with gr.Row():
-                        auto_boilerplate_btn = gr.Button("⚡ Auto-Fill Definitions from References", size="sm", min_width=210)
-                        load_example_btn = gr.Button("📋 Load Example Template", size="sm", min_width=140)
+                        settings_toggle_btn = gr.Button("⚙️ Settings", size="sm", min_width=90)
+                        auto_boilerplate_btn = gr.Button("⚡ Auto-Fill Definitions", size="sm", min_width=175)
+                        load_example_btn = gr.Button("📋 Load Example", size="sm", min_width=120)
                         clear_all_btn = gr.Button("🧹 Clear All", size="sm", min_width=75)
+
+                # Settings Panel State & Container
+                settings_open_state = gr.State(False)
+                with gr.Column(visible=False, elem_classes=["ref2va-settings-drawer"]) as settings_panel:
+                    gr.Markdown("#### ⚙️ MiniMax Ref2VA Studio Settings")
+                    with gr.Row():
+                        setting_active_mode = gr.Radio(
+                            choices=[
+                                ("Text Labels (with Hover Preview)", "text"),
+                                ("Graphic Previews (Interactive Thumbnail Cards)", "graphic"),
+                            ],
+                            value=loaded_settings.get("active_refs_display_mode", "text"),
+                            label="Active Reference Assets Display Mode"
+                        )
+                        setting_card_size = gr.Dropdown(
+                            choices=[("Small (95px)", "small"), ("Medium (120px)", "medium"), ("Large (150px)", "large")],
+                            value=loaded_settings.get("graphic_card_size", "medium"),
+                            label="Graphic Card Size"
+                        )
+                    with gr.Row():
+                        setting_sync_combined = gr.Checkbox(
+                            label="Sync from combined prompt",
+                            value=loaded_settings.get("sync_from_combined_prompt", False),
+                            info="Automatically parse and update separate section editors when the combined main prompt is edited"
+                        )
+                    settings_json_bridge = gr.Textbox(value=json.dumps(loaded_settings), visible=False, elem_classes=["ref2va-settings-json-input"])
 
                 # 1. Full Tag Palette (Manual Insertions)
                 with gr.Accordion("🏷️ Full Tag Palette (Manual Insertions)", open=False):
@@ -1093,99 +1455,68 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                             bt.click(fn=None, js=f"() => window.insertRef2VAText('{task} ')")
 
                 # 2. Dynamic Active Reference Assets Bar
-                with gr.Row(elem_classes=["ref2va-active-refs-bar"], visible=False) as active_refs_row:
-                    gr.HTML("<span class='ref2va-tag-label' style='color:#10b981;'>⚡ Active Reference Assets:</span>")
-                    dyn_btn_pic1 = gr.Button("🖼️ <Picture 1>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic1"])
-                    dyn_btn_pic2 = gr.Button("🖼️ <Picture 2>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic2"])
-                    dyn_btn_pic3 = gr.Button("🖼️ <Picture 3>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic3"])
-                    dyn_btn_pic4 = gr.Button("🖼️ <Picture 4>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic4"])
-                    dyn_btn_pic5 = gr.Button("🖼️ <Picture 5>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic5"])
-                    dyn_btn_pic6 = gr.Button("🖼️ <Picture 6>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-pic6"])
-                    dyn_btn_vid1 = gr.Button("🎥 <Video 1>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-vid1"])
-                    dyn_btn_vid2 = gr.Button("🎥 <Video 2>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-vid2"])
-                    dyn_btn_vid3 = gr.Button("🎥 <Video 3>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-vid3"])
-                    dyn_btn_aud1 = gr.Button("🔊 <Audio 1>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-aud1"])
-                    dyn_btn_aud2 = gr.Button("🔊 <Audio 2>", size="sm", visible=False, elem_classes=["ref2va-btn", "ref2va-btn-ref", "ref2va-dyn-aud2"])
+                gr.HTML("<div class='ref2va-active-refs-mount'></div>")
 
-                    dyn_btn_pic1.click(fn=None, js="() => window.insertRef2VAText('<Picture 1>')")
-                    dyn_btn_pic2.click(fn=None, js="() => window.insertRef2VAText('<Picture 2>')")
-                    dyn_btn_pic3.click(fn=None, js="() => window.insertRef2VAText('<Picture 3>')")
-                    dyn_btn_pic4.click(fn=None, js="() => window.insertRef2VAText('<Picture 4>')")
-                    dyn_btn_pic5.click(fn=None, js="() => window.insertRef2VAText('<Picture 5>')")
-                    dyn_btn_pic6.click(fn=None, js="() => window.insertRef2VAText('<Picture 6>')")
-                    dyn_btn_vid1.click(fn=None, js="() => window.insertRef2VAText('<Video 1>')")
-                    dyn_btn_vid2.click(fn=None, js="() => window.insertRef2VAText('<Video 2>')")
-                    dyn_btn_vid3.click(fn=None, js="() => window.insertRef2VAText('<Video 3>')")
-                    dyn_btn_aud1.click(fn=None, js="() => window.insertRef2VAText('<Audio 1>')")
-                    dyn_btn_aud2.click(fn=None, js="() => window.insertRef2VAText('<Audio 2>')")
-
-                # The 6 Dedicated Section Rich Editors
-                with gr.Row():
+                # 3. Symmetrical 6 Section Rich Editors Grid (Exact Same Size: 160px height)
+                with gr.Row(elem_classes=["ref2va-grid-row"]):
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-subject_definitions"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['subject_definitions']}</div>")
-                        sec_subject_defs = gr.Textbox(value="", lines=4, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_subject_defs = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-summary"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['summary']}</div>")
-                        sec_summary = gr.Textbox(value="", lines=4, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_summary = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
 
-                with gr.Row():
+                with gr.Row(elem_classes=["ref2va-grid-row"]):
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-retention_analysis"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['retention_analysis']}</div>")
-                        sec_retention = gr.Textbox(value="", lines=4, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_retention = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-detailed_description"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['detailed_description']}</div>")
-                        sec_detailed = gr.Textbox(value="", lines=7, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_detailed = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
 
-                with gr.Row():
+                with gr.Row(elem_classes=["ref2va-grid-row"]):
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-overall_soundscape"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['overall_soundscape']}</div>")
-                        sec_soundscape = gr.Textbox(value="", lines=2, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_soundscape = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-non_diegetic_music"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['non_diegetic_music']}</div>")
-                        sec_music = gr.Textbox(value="", lines=2, elem_classes=["ref2va-hidden-gradio-input"])
+                        sec_music = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
 
-            # --- Live Reference Asset Inspection & Boilerplate ---
+            # Settings Event Listeners
+            def toggle_settings_drawer(is_open: bool):
+                new_state = not is_open
+                return new_state, gr.update(visible=new_state)
 
-            def scan_references(img_start, img_refs, img_end, vid_guide, vid_src, aud_guide, aud_guide2):
-                pic_count = 0
-                vid_count = 0
-                aud_count = 0
+            settings_toggle_btn.click(
+                fn=toggle_settings_drawer,
+                inputs=[settings_open_state],
+                outputs=[settings_open_state, settings_panel],
+                show_progress="hidden"
+            )
 
-                if img_start is not None and str(img_start).strip() != "":
-                    pic_count += 1
-                if img_refs is not None:
-                    if isinstance(img_refs, list):
-                        pic_count += len([x for x in img_refs if x is not None])
-                    elif str(img_refs).strip() != "":
-                        pic_count += 1
-                if img_end is not None and str(img_end).strip() != "":
-                    pic_count += 1
-                if vid_src is not None and str(vid_src).strip() != "":
-                    vid_count += 1
-                if vid_guide is not None and str(vid_guide).strip() != "":
-                    vid_count += 1
-                if aud_guide is not None and str(aud_guide).strip() != "":
-                    aud_count += 1
-                if aud_guide2 is not None and str(aud_guide2).strip() != "":
-                    aud_count += 1
+            def update_and_persist_settings(mode, size, sync_combined):
+                new_settings = {
+                    "active_refs_display_mode": mode,
+                    "graphic_card_size": size,
+                    "sync_from_combined_prompt": bool(sync_combined)
+                }
+                save_settings(new_settings)
+                return json.dumps(new_settings)
 
-                has_any_ref = (pic_count + vid_count + aud_count) > 0
-
-                return (
-                    gr.update(visible=has_any_ref),
-                    gr.update(visible=pic_count >= 1),
-                    gr.update(visible=pic_count >= 2),
-                    gr.update(visible=pic_count >= 3),
-                    gr.update(visible=pic_count >= 4),
-                    gr.update(visible=pic_count >= 5),
-                    gr.update(visible=pic_count >= 6),
-                    gr.update(visible=vid_count >= 1),
-                    gr.update(visible=vid_count >= 2),
-                    gr.update(visible=vid_count >= 3),
-                    gr.update(visible=aud_count >= 1),
-                    gr.update(visible=aud_count >= 2),
+            for comp in [setting_active_mode, setting_card_size, setting_sync_combined]:
+                comp.change(
+                    fn=update_and_persist_settings,
+                    inputs=[setting_active_mode, setting_card_size, setting_sync_combined],
+                    outputs=[settings_json_bridge],
+                    show_progress="hidden"
+                ).then(
+                    fn=None,
+                    inputs=None,
+                    outputs=None,
+                    js="() => window.refreshActiveReferencesBar()"
                 )
 
+            # Auto-generate boilerplate based on active references
             media_inputs = [
                 self.image_start if self.image_start is not None else gr.State(None),
                 self.image_refs if self.image_refs is not None else gr.State(None),
@@ -1196,13 +1527,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 self.audio_guide2 if self.audio_guide2 is not None else gr.State(None)
             ]
 
-            dyn_btn_outputs = [
-                active_refs_row,
-                dyn_btn_pic1, dyn_btn_pic2, dyn_btn_pic3, dyn_btn_pic4, dyn_btn_pic5, dyn_btn_pic6,
-                dyn_btn_vid1, dyn_btn_vid2, dyn_btn_vid3,
-                dyn_btn_aud1, dyn_btn_aud2
-            ]
-
             active_media_components = [comp for comp in [
                 self.image_start, self.image_refs, self.image_end,
                 self.video_guide, self.video_source,
@@ -1211,18 +1535,13 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             for comp in active_media_components:
                 comp.change(
-                    fn=scan_references,
-                    inputs=media_inputs,
-                    outputs=dyn_btn_outputs,
-                    show_progress="hidden"
-                ).then(
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(window.refreshActiveReferencesBar, 150); }"
+                    js="() => { setTimeout(window.refreshActiveReferencesBar, 150); }",
+                    show_progress="hidden"
                 )
 
-            # Auto-generate boilerplate based on active references
             def generate_reference_boilerplate(img_start, img_refs, img_end, vid_guide, vid_src, aud_guide, aud_guide2):
                 pic_idx = 0
                 subj_defs = []
@@ -1286,10 +1605,9 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 js="() => window.updateRichEditorsFromTextareas(true)"
             )
 
-            # --- Synchronized Prompt Handling ---
+            # Synchronized Prompt Handling
             section_inputs = [sec_subject_defs, sec_summary, sec_retention, sec_detailed, sec_soundscape, sec_music]
 
-            # 1. 6 Section textboxes change -> Assemble to Main Prompt
             if self.main_prompt is not None:
                 for sec in section_inputs:
                     sec.input(
@@ -1299,9 +1617,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         show_progress="hidden"
                     )
 
-            # 2. Main Prompt changes (either via typing or loaded from file/preset) -> Split into 6 Sections
+            # Sync from combined prompt back to separate sections (controlled by setting)
             def on_external_main_prompt_change(raw_val, state, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
-                # Fallback to reading directly from state if raw_val hasn't populated yet
+                current_settings = load_settings()
+                if not current_settings.get("sync_from_combined_prompt", False):
+                    return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
                 prompt_text = raw_val or ""
                 if isinstance(state, dict):
                     model_type = state.get("model_type", "")
@@ -1312,8 +1633,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         prompt_text = state.get("prompt")
 
                 current_assembled = assemble_multisection_prompt(s_def, s_sum, s_ret, s_det, s_snd, s_mus)
-                
-                # If content is already identical (e.g. from user typing in sections), ignore to preserve cursor
                 if prompt_text.strip() == current_assembled.strip():
                     return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
@@ -1327,17 +1646,32 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     parsed["non_diegetic_music"],
                 )
 
-            # Listen to .change on main_prompt so file uploads and presets automatically split
+            # Explicit file/form load parser
+            def on_form_reload_or_file_load(raw_val, state, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
+                prompt_text = raw_val or ""
+                if isinstance(state, dict):
+                    model_type = state.get("model_type", "")
+                    all_settings = state.get("all_settings", {})
+                    if model_type in all_settings and all_settings[model_type].get("prompt"):
+                        prompt_text = all_settings[model_type].get("prompt")
+                    elif state.get("prompt"):
+                        prompt_text = state.get("prompt")
+
+                parsed = parse_multisection_prompt(prompt_text)
+                return (
+                    parsed["subject_definitions"],
+                    parsed["summary"],
+                    parsed["retention_analysis"],
+                    parsed["detailed_description"],
+                    parsed["overall_soundscape"],
+                    parsed["non_diegetic_music"],
+                )
+
             if self.main_prompt is not None:
                 self.main_prompt.change(
                     fn=on_external_main_prompt_change,
                     inputs=[self.main_prompt, self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
                     outputs=section_inputs,
-                    show_progress="hidden"
-                ).then(
-                    fn=scan_references,
-                    inputs=media_inputs,
-                    outputs=dyn_btn_outputs,
                     show_progress="hidden"
                 ).then(
                     fn=None,
@@ -1346,17 +1680,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => { window.updateRichEditorsFromTextareas(false); window.refreshActiveReferencesBar(); }"
                 )
 
-            # Form reload / file load trigger
             if self.refresh_form_trigger is not None:
                 self.refresh_form_trigger.change(
-                    fn=on_external_main_prompt_change,
+                    fn=on_form_reload_or_file_load,
                     inputs=[self.main_prompt if self.main_prompt is not None else gr.State(""), self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
                     outputs=section_inputs,
-                    show_progress="hidden"
-                ).then(
-                    fn=scan_references,
-                    inputs=media_inputs,
-                    outputs=dyn_btn_outputs,
                     show_progress="hidden"
                 ).then(
                     fn=None,
@@ -1365,18 +1693,13 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 200); }"
                 )
 
-            # Direct drop listener on the settings_file component
             if self.settings_file is not None:
                 self.settings_file.upload(
-                    fn=scan_references,
-                    inputs=media_inputs,
-                    outputs=dyn_btn_outputs,
-                    show_progress="hidden"
-                ).then(
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(() => { window.refreshActiveReferencesBar(); }, 500); }"
+                    js="() => { setTimeout(() => { window.refreshActiveReferencesBar(); }, 500); }",
+                    show_progress="hidden"
                 )
 
             def load_example():
@@ -1444,11 +1767,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     fn=on_model_target_change,
                     inputs=[self.model_choice_target],
                     outputs=[ref2va_main_container],
-                    show_progress="hidden"
-                ).then(
-                    fn=scan_references,
-                    inputs=media_inputs,
-                    outputs=dyn_btn_outputs,
                     show_progress="hidden"
                 ).then(
                     fn=None,
