@@ -140,7 +140,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.4"
+        self.version = "1.0.5"
         self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
@@ -168,6 +168,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             window._ref2vaSyncingFromGradio = false;
             window._ref2vaHidePreviewTimer = null;
             window._ref2vaCurrentPreviewTag = null;
+            window._ref2vaSyncSource = null;
             window._ref2vaSettings = {
                 active_refs_display_mode: 'text',
                 graphic_card_size: 'medium',
@@ -217,12 +218,15 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 else if (/^<(scenetrans|cutoff)>/i.test(clean)) { cls = 'ref2va-badge-trans'; }
 
                 const esc = escapeHtml(clean);
-                return `<span class="ref2va-inline-badge ${cls}" contenteditable="true" data-raw-tag="${esc}" onmouseenter="window.onTagMouseEnter('${esc}', this, event)" onmouseleave="window.onTagMouseLeave(event)">${esc}</span>`;
+                return `<span class="ref2va-inline-badge ${cls}" contenteditable="true" onmouseenter="window.onTagMouseEnter(this, event)" onmouseleave="window.onTagMouseLeave(event)">${esc}</span>`;
             };
 
-            window.onTagMouseEnter = function(tagStr, el, e) {
+            window.onTagMouseEnter = function(el, e) {
                 cancelHidePreview();
-                window.showRef2VAPreview(tagStr, el, e);
+                const currentTag = (el.textContent || '').trim();
+                if (currentTag) {
+                    window.showRef2VAPreview(currentTag, el, e);
+                }
             };
 
             window.onTagMouseLeave = function(e) {
@@ -252,7 +256,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         text += child.textContent;
                     } else if (child.nodeType === Node.ELEMENT_NODE) {
                         if (child.classList && child.classList.contains('ref2va-inline-badge')) {
-                            text += child.textContent.trim();
+                            text += child.textContent;
                         } else if (child.tagName === 'BR') {
                             text += '\\n';
                         } else if (child.tagName === 'DIV' || child.tagName === 'P') {
@@ -264,6 +268,80 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     }
                 }
                 return text;
+            };
+
+            function getCaretCharacterOffsetWithin(element) {
+                let caretOffset = 0;
+                const sel = window.getSelection();
+                if (sel && sel.rangeCount > 0) {
+                    const range = sel.getRangeAt(0);
+                    const preCaretRange = range.cloneRange();
+                    preCaretRange.selectNodeContents(element);
+                    try {
+                        preCaretRange.setEnd(range.endContainer, range.endOffset);
+                        caretOffset = window.extractPlainTextFromRichEditor(preCaretRange.cloneContents()).length;
+                    } catch(e) {}
+                }
+                return caretOffset;
+            }
+
+            function setCaretCharacterOffsetWithin(element, offset) {
+                const range = document.createRange();
+                range.selectNodeContents(element);
+                const sel = window.getSelection();
+                sel.removeAllRanges();
+
+                let currentOffset = 0;
+                function traverse(node) {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        const len = node.textContent.length;
+                        if (currentOffset + len >= offset) {
+                            range.setStart(node, Math.max(0, Math.min(len, offset - currentOffset)));
+                            range.setEnd(node, Math.max(0, Math.min(len, offset - currentOffset)));
+                            sel.addRange(range);
+                            return true;
+                        }
+                        currentOffset += len;
+                    } else if (node.nodeType === Node.ELEMENT_NODE) {
+                        for (const child of node.childNodes) {
+                            if (traverse(child)) return true;
+                        }
+                    }
+                    return false;
+                }
+                traverse(element);
+            }
+
+            window.normalizeBadgesInEditor = function(editor) {
+                const rawText = window.extractPlainTextFromRichEditor(editor);
+                const tagRegex = /(<Subject\s+\d+>|<Picture\s+\d+>|<Video\s+\d+>|<Audio\s+\d+>|\(S\d+\)|\[Shot\s+\d+[^\]]*\]|<d>[\s\S]*?<\/d>|<(?:scenetrans|cutoff)>|\b(?:fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\b|\[(?:reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\])/i;
+
+                let needsRebadge = false;
+
+                // Check if any badge has invalid extra text
+                const badges = editor.querySelectorAll('.ref2va-inline-badge');
+                for (const b of badges) {
+                    const txt = b.textContent;
+                    if (!txt.match(tagRegex) || txt.match(tagRegex)[0] !== txt) {
+                        needsRebadge = true;
+                        break;
+                    }
+                }
+
+                // Check if any plain text has unbadged tags
+                if (!needsRebadge && rawText.match(tagRegex)) {
+                    const renderedBadgesCount = badges.length;
+                    const matchesCount = (rawText.match(new RegExp(tagRegex.source, 'gi')) || []).length;
+                    if (matchesCount !== renderedBadgesCount) {
+                        needsRebadge = true;
+                    }
+                }
+
+                if (needsRebadge) {
+                    const offset = getCaretCharacterOffsetWithin(editor);
+                    editor.innerHTML = window.plainTextToRichHtml(rawText);
+                    setCaretCharacterOffsetWithin(editor, offset);
+                }
             };
 
             window.syncRichEditorToGradio = function(editor) {
@@ -301,6 +379,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 const assembled = blocks.join('\\n\\n');
                 const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced textarea') || document.querySelector('#wangp-prompt-advanced');
                 if (mainPromptTextarea && mainPromptTextarea.value !== assembled) {
+                    window._ref2vaSyncSource = 'sections';
                     const proto = window.HTMLTextAreaElement.prototype;
                     const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
                     nativeValueSetter.call(mainPromptTextarea, assembled);
@@ -719,7 +798,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }
             });
 
-            // Live Active Reference Bar Generator (No Hover Popups on Graphic Mode)
+            // Live Active Reference Bar Generator (Supports up to 9 pictures)
             window.refreshActiveReferencesBar = function() {
                 const barContainer = document.querySelector('.ref2va-active-refs-mount');
                 if (!barContainer) return;
@@ -736,7 +815,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 const detected = [];
 
-                for (let i = 1; i <= 6; i++) {
+                for (let i = 1; i <= 9; i++) {
                     const m = window.findWanGPMediaElement('picture', i);
                     if (m && m.src) {
                         detected.push({ tag: `<Picture ${i}>`, label: `🖼️ <Picture ${i}>`, type: 'picture', num: i, media: m });
@@ -783,7 +862,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 detected.forEach(item => {
                     if (displayMode === 'graphic') {
-                        // Graphic Mode: Embedded media with clean Play-only controls; NO HOVER POPUP
                         const card = document.createElement('div');
                         card.className = `ref2va-graphic-card size-${cardSize}`;
                         
@@ -828,12 +906,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         card.appendChild(insertBtn);
                         itemsWrapper.appendChild(card);
                     } else {
-                        // Text Mode: Text button with live onhover preview popup
                         const btn = document.createElement('button');
                         btn.className = 'ref2va-btn ref2va-btn-ref';
                         btn.textContent = item.label;
                         btn.onclick = () => window.insertRef2VAText(item.tag);
-                        btn.onmouseenter = (e) => window.onTagMouseEnter(item.tag, btn, e);
+                        btn.onmouseenter = (e) => window.onTagMouseEnter(btn, e);
                         btn.onmouseleave = (e) => window.onTagMouseLeave(e);
                         itemsWrapper.appendChild(btn);
                     }
@@ -864,6 +941,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         });
 
                         richEditor.addEventListener('input', () => {
+                            window.normalizeBadgesInEditor(richEditor);
                             window.syncRichEditorToGradio(richEditor);
                         });
 
@@ -872,28 +950,52 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 });
             };
 
-            window.wrapMainPromptInAccordion = function() {
+            // Wrapped only when Minimax is selected, restored otherwise
+            window.updateMainPromptAccordionState = function(isMinimax) {
                 const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced');
-                if (!mainPromptTextarea) return;
+                const studioContainer = document.querySelector('.ref2va-container');
+                if (!mainPromptTextarea || !studioContainer) return;
 
-                const column = mainPromptTextarea.closest('.wangp-prompt-tools-stack') || mainPromptTextarea.closest('.gr-form') || mainPromptTextarea.parentElement;
-                if (!column || column.dataset.ref2vaWrapped === 'true') return;
+                const column = mainPromptTextarea.closest('.wangp-prompt-tools-stack') || mainPromptTextarea;
+                const parent = column.parentElement;
+                if (!parent) return;
 
-                const drawer = document.createElement('details');
-                drawer.className = 'ref2va-raw-prompt-drawer';
-                drawer.open = false;
+                let drawer = document.querySelector('.ref2va-raw-prompt-drawer');
 
-                const summary = document.createElement('summary');
-                summary.className = 'ref2va-raw-prompt-summary';
-                summary.innerHTML = '<span>📝 <strong>Combined Main Prompt (Read/Write)</strong></span>';
-                drawer.appendChild(summary);
+                if (isMinimax) {
+                    if (!drawer) {
+                        drawer = document.createElement('details');
+                        drawer.className = 'ref2va-raw-prompt-drawer';
+                        drawer.open = false;
 
-                const content = document.createElement('div');
-                content.className = 'ref2va-raw-prompt-content';
-                column.parentNode.insertBefore(drawer, column);
-                content.appendChild(column);
-                drawer.appendChild(content);
-                column.dataset.ref2vaWrapped = 'true';
+                        const summary = document.createElement('summary');
+                        summary.className = 'ref2va-raw-prompt-summary';
+                        summary.innerHTML = '<span>📝 <strong>Combined Main Prompt (Read/Write)</strong></span>';
+                        drawer.appendChild(summary);
+
+                        const content = document.createElement('div');
+                        content.className = 'ref2va-raw-prompt-content';
+                        drawer.appendChild(content);
+
+                        parent.insertBefore(drawer, column);
+                        content.appendChild(column);
+                    } else {
+                        drawer.style.display = '';
+                    }
+
+                    // Pin studio immediately after the drawer/prompt
+                    if (drawer.nextElementSibling !== studioContainer) {
+                        parent.insertBefore(studioContainer, drawer.nextSibling);
+                    }
+                } else {
+                    if (drawer) {
+                        parent.insertBefore(column, drawer);
+                        drawer.remove();
+                    }
+                    if (column.nextElementSibling !== studioContainer) {
+                        parent.insertBefore(studioContainer, column.nextSibling);
+                    }
+                }
             };
 
             let _refObserverTimer = null;
@@ -914,10 +1016,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'value', 'class', 'href'] });
 
             setTimeout(() => {
-                window.wrapMainPromptInAccordion();
+                const container = document.querySelector('.ref2va-container');
+                const isMinimax = container && container.style.display !== 'none' && !container.classList.contains('hidden');
+                window.updateMainPromptAccordionState(Boolean(isMinimax));
                 window.setupAllRichEditors();
                 window.refreshActiveReferencesBar();
-            }, 600);
+            }, 500);
         })();
         """)
 
@@ -1394,7 +1498,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         )
                     settings_json_bridge = gr.Textbox(value=json.dumps(loaded_settings), visible=False, elem_classes=["ref2va-settings-json-input"])
 
-                # 1. Full Tag Palette (Manual Insertions)
+                # 1. Full Tag Palette (Manual Insertions - Up to 9 pictures)
                 with gr.Accordion("🏷️ Full Tag Palette (Manual Insertions)", open=False):
                     with gr.Row(elem_classes=["ref2va-toolbar-group"]):
                         gr.HTML("<span class='ref2va-tag-label'>Subjects:</span>")
@@ -1404,7 +1508,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                     with gr.Row(elem_classes=["ref2va-toolbar-group"]):
                         gr.HTML("<span class='ref2va-tag-label'>Generic Tags:</span>")
-                        for i in range(1, 7):
+                        for i in range(1, 10):
                             bp = gr.Button(f"🖼️ <Picture {i}>", size="sm", elem_classes=["ref2va-btn"])
                             bp.click(fn=None, js=f"() => window.insertRef2VAText('<Picture {i}>')")
                         for i in range(1, 4):
@@ -1516,7 +1620,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => window.refreshActiveReferencesBar()"
                 )
 
-            # Auto-generate boilerplate based on active references
+            # Auto-generate boilerplate based on active references (up to 9 pictures)
             media_inputs = [
                 self.image_start if self.image_start is not None else gr.State(None),
                 self.image_refs if self.image_refs is not None else gr.State(None),
@@ -1617,21 +1721,13 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         show_progress="hidden"
                     )
 
-            # Sync from combined prompt back to separate sections (controlled by setting)
-            def on_external_main_prompt_change(raw_val, state, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
+            # Sync from combined prompt back to separate sections (controlled strictly by setting)
+            def on_external_main_prompt_change(raw_val, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
                 current_settings = load_settings()
                 if not current_settings.get("sync_from_combined_prompt", False):
                     return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
                 prompt_text = raw_val or ""
-                if isinstance(state, dict):
-                    model_type = state.get("model_type", "")
-                    all_settings = state.get("all_settings", {})
-                    if model_type in all_settings and all_settings[model_type].get("prompt"):
-                        prompt_text = all_settings[model_type].get("prompt")
-                    elif state.get("prompt"):
-                        prompt_text = state.get("prompt")
-
                 current_assembled = assemble_multisection_prompt(s_def, s_sum, s_ret, s_det, s_snd, s_mus)
                 if prompt_text.strip() == current_assembled.strip():
                     return gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
@@ -1646,17 +1742,9 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     parsed["non_diegetic_music"],
                 )
 
-            # Explicit file/form load parser
-            def on_form_reload_or_file_load(raw_val, state, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
+            # Explicit file upload / preset load parser
+            def on_form_reload_or_file_load(raw_val, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
                 prompt_text = raw_val or ""
-                if isinstance(state, dict):
-                    model_type = state.get("model_type", "")
-                    all_settings = state.get("all_settings", {})
-                    if model_type in all_settings and all_settings[model_type].get("prompt"):
-                        prompt_text = all_settings[model_type].get("prompt")
-                    elif state.get("prompt"):
-                        prompt_text = state.get("prompt")
-
                 parsed = parse_multisection_prompt(prompt_text)
                 return (
                     parsed["subject_definitions"],
@@ -1670,7 +1758,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             if self.main_prompt is not None:
                 self.main_prompt.change(
                     fn=on_external_main_prompt_change,
-                    inputs=[self.main_prompt, self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
+                    inputs=[self.main_prompt] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1683,7 +1771,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             if self.refresh_form_trigger is not None:
                 self.refresh_form_trigger.change(
                     fn=on_form_reload_or_file_load,
-                    inputs=[self.main_prompt if self.main_prompt is not None else gr.State(""), self.state_component if self.state_component is not None else gr.State(None)] + section_inputs,
+                    inputs=[self.main_prompt if self.main_prompt is not None else gr.State("")] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1752,7 +1840,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }"""
             )
 
-            # Model switch listener
+            # Model switch listener (Wraps prompt drawer ONLY if Minimax)
             def on_model_target_change(target_val):
                 model_name = str(target_val or "").split("|")[0].strip()
                 base_type = ""
@@ -1760,19 +1848,21 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     base_type = self.get_base_model_type(model_name) or ""
                 
                 is_active = is_minimax_model(model_name, base_type)
-                return gr.update(visible=is_active)
+                return gr.update(visible=is_active), is_active
+
+            model_active_flag = gr.Checkbox(value=initial_visible, visible=False)
 
             if self.model_choice_target is not None:
                 self.model_choice_target.change(
                     fn=on_model_target_change,
                     inputs=[self.model_choice_target],
-                    outputs=[ref2va_main_container],
+                    outputs=[ref2va_main_container, model_active_flag],
                     show_progress="hidden"
                 ).then(
                     fn=None,
-                    inputs=None,
+                    inputs=[model_active_flag],
                     outputs=None,
-                    js="() => { window.wrapMainPromptInAccordion(); window.setupAllRichEditors(); setTimeout(window.refreshActiveReferencesBar, 250); }"
+                    js="(isMinimax) => { window.updateMainPromptAccordionState(Boolean(isMinimax)); window.setupAllRichEditors(); setTimeout(window.refreshActiveReferencesBar, 250); }"
                 )
 
             self.ref2va_container = ref2va_main_container
