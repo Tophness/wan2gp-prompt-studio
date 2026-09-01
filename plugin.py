@@ -140,7 +140,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.5"
+        self.version = "1.0.6"
         self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
@@ -954,16 +954,16 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             window.updateMainPromptAccordionState = function(isMinimax) {
                 const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced');
                 const studioContainer = document.querySelector('.ref2va-container');
-                if (!mainPromptTextarea || !studioContainer) return;
+                if (!mainPromptTextarea) return;
 
                 const column = mainPromptTextarea.closest('.wangp-prompt-tools-stack') || mainPromptTextarea;
-                const parent = column.parentElement;
-                if (!parent) return;
-
                 let drawer = document.querySelector('.ref2va-raw-prompt-drawer');
 
                 if (isMinimax) {
                     if (!drawer) {
+                        const outerParent = column.parentElement;
+                        if (!outerParent) return;
+
                         drawer = document.createElement('details');
                         drawer.className = 'ref2va-raw-prompt-drawer';
                         drawer.open = false;
@@ -977,23 +977,29 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         content.className = 'ref2va-raw-prompt-content';
                         drawer.appendChild(content);
 
-                        parent.insertBefore(drawer, column);
+                        outerParent.insertBefore(drawer, column);
                         content.appendChild(column);
                     } else {
                         drawer.style.display = '';
                     }
 
-                    // Pin studio immediately after the drawer/prompt
-                    if (drawer.nextElementSibling !== studioContainer) {
-                        parent.insertBefore(studioContainer, drawer.nextSibling);
+                    if (studioContainer && drawer.parentElement) {
+                        if (drawer.nextElementSibling !== studioContainer) {
+                            drawer.parentElement.insertBefore(studioContainer, drawer.nextSibling);
+                        }
                     }
                 } else {
                     if (drawer) {
-                        parent.insertBefore(column, drawer);
-                        drawer.remove();
+                        const drawerParent = drawer.parentElement;
+                        if (drawerParent) {
+                            drawerParent.insertBefore(column, drawer);
+                            drawer.remove();
+                        }
                     }
-                    if (column.nextElementSibling !== studioContainer) {
-                        parent.insertBefore(studioContainer, column.nextSibling);
+                    if (studioContainer && column.parentElement) {
+                        if (column.nextElementSibling !== studioContainer) {
+                            column.parentElement.insertBefore(studioContainer, column.nextSibling);
+                        }
                     }
                 }
             };
