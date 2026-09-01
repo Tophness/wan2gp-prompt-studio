@@ -1,6 +1,6 @@
 {
   "name": "MiniMax Ref2VA Prompt Studio",
-  "version": "1.0.6",
+  "version": "1.0.8",
   "description": "Splits the different prompt sections up (subject_definitions, retention_analysis, etc.), dynamically detects when you add a reference to bring up a toolbar to one-click insert them, adds inline badges to inserted references with previews on hover, constructs template builds, etc.",
   "author": "Community",
   "type": "extension",

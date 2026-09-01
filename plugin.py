@@ -2,6 +2,7 @@ import gradio as gr
 import re
 import os
 import json
+import html
 from typing import Dict, Any, List
 from shared.utils.plugins import WAN2GPPlugin
 
@@ -91,7 +92,8 @@ def parse_multisection_prompt(raw_text: str) -> Dict[str, str]:
     if not raw_text or not raw_text.strip():
         return result
 
-    text = raw_text.strip().replace("\r\n", "\n").replace("\r", "\n")
+    # Decode any existing HTML entities (e.g. &#039;, &quot;) loaded from metadata
+    text = html.unescape(raw_text).strip().replace("\r\n", "\n").replace("\r", "\n")
     pattern = r"(?im)^(subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music)\s*:\s*"
     
     matches = list(re.finditer(pattern, text))
@@ -140,7 +142,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.6"
+        self.version = "1.0.8"
         self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
@@ -151,6 +153,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
         self.request_component("image_start")
         self.request_component("image_end")
         self.request_component("video_guide")
+        self.request_component("video_guide2")
         self.request_component("video_source")
         self.request_component("audio_guide")
         self.request_component("audio_guide2")
@@ -175,13 +178,18 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 sync_from_combined_prompt: false
             };
 
+            function decodeHtmlEntities(str) {
+                if (!str || typeof str !== 'string' || !str.includes('&')) return str || '';
+                const txt = document.createElement('textarea');
+                txt.innerHTML = str;
+                return txt.value;
+            }
+
             function escapeHtml(str) {
                 return (str || '')
                     .replace(/&/g, '&amp;')
                     .replace(/</g, '&lt;')
-                    .replace(/>/g, '&gt;')
-                    .replace(/"/g, '&quot;')
-                    .replace(/'/g, '&#039;');
+                    .replace(/>/g, '&gt;');
             }
 
             function cancelHidePreview() {
@@ -203,7 +211,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             }
 
             window.tagToInlineBadgeHtml = function(tagStr) {
-                const clean = tagStr.trim();
+                const clean = decodeHtmlEntities(tagStr).trim();
                 let cls = 'ref2va-badge-generic';
 
                 if (/^<Subject/i.test(clean)) { cls = 'ref2va-badge-subject'; }
@@ -235,13 +243,14 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             window.plainTextToRichHtml = function(text) {
                 if (!text) return '<div><br></div>';
+                text = decodeHtmlEntities(text);
                 const lines = text.split('\\n');
                 return lines.map(line => {
                     let esc = escapeHtml(line);
                     esc = esc.replace(/&lt;(Subject|Picture|Video|Audio)\s+(\d+)&gt;/gi, (m, k, n) => window.tagToInlineBadgeHtml(`<${k} ${n}>`));
                     esc = esc.replace(/\((S\d+)\)/gi, (m, s) => window.tagToInlineBadgeHtml(`(${s})`));
                     esc = esc.replace(/\[Shot\s+(\d+)([^\]]*)\]/gi, (m, n, rest) => window.tagToInlineBadgeHtml(`[Shot ${n}${rest}]`));
-                    esc = esc.replace(/&lt;d&gt;([\s\S]*?)&lt;\/d&gt;/gi, (m, diag) => window.tagToInlineBadgeHtml(`<d>${diag}</d>`));
+                    esc = esc.replace(/&lt;d&gt;([\s\S]*?)&lt;\/d&gt;/gi, (m, diag) => window.tagToInlineBadgeHtml(`<d>${decodeHtmlEntities(diag)}</d>`));
                     esc = esc.replace(/&lt;(scenetrans|cutoff)&gt;/gi, (m, t) => window.tagToInlineBadgeHtml(`<${t}>`));
                     esc = esc.replace(/\\b(fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\\b/gi, (m) => window.tagToInlineBadgeHtml(m));
                     esc = esc.replace(/\[(reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\]/gi, (m, t) => window.tagToInlineBadgeHtml(`[${t}]`));
@@ -267,81 +276,95 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         }
                     }
                 }
-                return text;
+                return decodeHtmlEntities(text);
             };
 
-            function getCaretCharacterOffsetWithin(element) {
-                let caretOffset = 0;
+            function getCaretOffset(root) {
                 const sel = window.getSelection();
-                if (sel && sel.rangeCount > 0) {
-                    const range = sel.getRangeAt(0);
-                    const preCaretRange = range.cloneRange();
-                    preCaretRange.selectNodeContents(element);
-                    try {
-                        preCaretRange.setEnd(range.endContainer, range.endOffset);
-                        caretOffset = window.extractPlainTextFromRichEditor(preCaretRange.cloneContents()).length;
-                    } catch(e) {}
+                if (!sel || sel.rangeCount === 0) return 0;
+                const range = sel.getRangeAt(0);
+                const preRange = document.createRange();
+                preRange.selectNodeContents(root);
+                try {
+                    preRange.setEnd(range.endContainer, range.endOffset);
+                    return preRange.toString().length;
+                } catch(e) {
+                    return 0;
                 }
-                return caretOffset;
             }
 
-            function setCaretCharacterOffsetWithin(element, offset) {
-                const range = document.createRange();
-                range.selectNodeContents(element);
+            function setCaretOffset(root, targetOffset) {
                 const sel = window.getSelection();
-                sel.removeAllRanges();
+                if (!sel) return;
+                const range = document.createRange();
+                range.selectNodeContents(root);
 
-                let currentOffset = 0;
-                function traverse(node) {
+                let charCount = 0;
+                let found = false;
+
+                function walk(node) {
+                    if (found) return;
                     if (node.nodeType === Node.TEXT_NODE) {
-                        const len = node.textContent.length;
-                        if (currentOffset + len >= offset) {
-                            range.setStart(node, Math.max(0, Math.min(len, offset - currentOffset)));
-                            range.setEnd(node, Math.max(0, Math.min(len, offset - currentOffset)));
-                            sel.addRange(range);
-                            return true;
+                        const nextCount = charCount + node.textContent.length;
+                        if (targetOffset <= nextCount) {
+                            const offset = Math.max(0, Math.min(node.textContent.length, targetOffset - charCount));
+                            range.setStart(node, offset);
+                            range.setEnd(node, offset);
+                            found = true;
+                            return;
                         }
-                        currentOffset += len;
+                        charCount = nextCount;
                     } else if (node.nodeType === Node.ELEMENT_NODE) {
                         for (const child of node.childNodes) {
-                            if (traverse(child)) return true;
+                            walk(child);
+                            if (found) return;
                         }
                     }
-                    return false;
                 }
-                traverse(element);
+
+                walk(root);
+
+                if (!found) {
+                    range.selectNodeContents(root);
+                    range.collapse(false);
+                }
+
+                sel.removeAllRanges();
+                sel.addRange(range);
             }
 
+            let _rebadgeFrame = null;
             window.normalizeBadgesInEditor = function(editor) {
-                const rawText = window.extractPlainTextFromRichEditor(editor);
-                const tagRegex = /(<Subject\s+\d+>|<Picture\s+\d+>|<Video\s+\d+>|<Audio\s+\d+>|\(S\d+\)|\[Shot\s+\d+[^\]]*\]|<d>[\s\S]*?<\/d>|<(?:scenetrans|cutoff)>|\b(?:fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\b|\[(?:reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\])/i;
+                if (_rebadgeFrame) cancelAnimationFrame(_rebadgeFrame);
+                _rebadgeFrame = requestAnimationFrame(() => {
+                    const rawText = window.extractPlainTextFromRichEditor(editor);
+                    const tagRegex = /(<Subject\s+\d+>|<Picture\s+\d+>|<Video\s+\d+>|<Audio\s+\d+>|\(S\d+\)|\[Shot\s+\d+[^\]]*\]|<d>[\s\S]*?<\/d>|<(?:scenetrans|cutoff)>|\b(?:fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\b|\[(?:reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\])/i;
 
-                let needsRebadge = false;
+                    let needsRebadge = false;
+                    const badges = editor.querySelectorAll('.ref2va-inline-badge');
 
-                // Check if any badge has invalid extra text
-                const badges = editor.querySelectorAll('.ref2va-inline-badge');
-                for (const b of badges) {
-                    const txt = b.textContent;
-                    if (!txt.match(tagRegex) || txt.match(tagRegex)[0] !== txt) {
-                        needsRebadge = true;
-                        break;
+                    for (const b of badges) {
+                        const txt = b.textContent;
+                        const match = txt.match(tagRegex);
+                        if (!match || match[0] !== txt) {
+                            needsRebadge = true;
+                            break;
+                        }
                     }
-                }
 
-                // Check if any plain text has unbadged tags
-                if (!needsRebadge && rawText.match(tagRegex)) {
-                    const renderedBadgesCount = badges.length;
-                    const matchesCount = (rawText.match(new RegExp(tagRegex.source, 'gi')) || []).length;
-                    if (matchesCount !== renderedBadgesCount) {
-                        needsRebadge = true;
+                    if (!needsRebadge && rawText.match(tagRegex)) {
+                        const matchesCount = (rawText.match(new RegExp(tagRegex.source, 'gi')) || []).length;
+                        if (matchesCount !== badges.length) {
+                            needsRebadge = true;
+                        }
                     }
-                }
 
-                if (needsRebadge) {
-                    const offset = getCaretCharacterOffsetWithin(editor);
-                    editor.innerHTML = window.plainTextToRichHtml(rawText);
-                    setCaretCharacterOffsetWithin(editor, offset);
-                }
+                    if (needsRebadge) {
+                        const offset = getCaretOffset(editor);
+                        editor.innerHTML = window.plainTextToRichHtml(rawText);
+                        setCaretOffset(editor, offset);
+                    }
+                });
             };
 
             window.syncRichEditorToGradio = function(editor) {
@@ -401,13 +424,13 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     }
 
                     const currentPlain = window.extractPlainTextFromRichEditor(richEditor).trim();
-                    const targetPlain = (textarea.value || '').trim();
+                    const targetPlain = decodeHtmlEntities(textarea.value || '').trim();
 
                     if (!force && currentPlain === targetPlain) {
                         return;
                     }
 
-                    richEditor.innerHTML = window.plainTextToRichHtml(textarea.value);
+                    richEditor.innerHTML = window.plainTextToRichHtml(targetPlain);
                 });
             };
 
@@ -798,7 +821,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }
             });
 
-            // Live Active Reference Bar Generator (Supports up to 9 pictures)
+            // Live Active Reference Bar Generator (Up to 9 pictures, No Hover Popups in Graphic Mode)
             window.refreshActiveReferencesBar = function() {
                 const barContainer = document.querySelector('.ref2va-active-refs-mount');
                 if (!barContainer) return;
@@ -834,7 +857,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     }
                 }
 
-                // Equality guard: stops infinite flashing cycle
                 const cacheKey = detected.map(d => `${d.tag}:${d.media.src}`).join('|') + `|mode:${displayMode}|size:${cardSize}`;
                 if (barContainer.dataset.renderedCache === cacheKey) {
                     return;
@@ -950,7 +972,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 });
             };
 
-            // Wrapped only when Minimax is selected, restored otherwise
             window.updateMainPromptAccordionState = function(isMinimax) {
                 const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced');
                 const studioContainer = document.querySelector('.ref2va-container');
@@ -1027,7 +1048,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 window.updateMainPromptAccordionState(Boolean(isMinimax));
                 window.setupAllRichEditors();
                 window.refreshActiveReferencesBar();
-            }, 500);
+            }, 600);
         })();
         """)
 
@@ -1038,6 +1059,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
         self.image_start = components.get("image_start")
         self.image_end = components.get("image_end")
         self.video_guide = components.get("video_guide")
+        self.video_guide2 = components.get("video_guide2")
         self.video_source = components.get("video_source")
         self.audio_guide = components.get("audio_guide")
         self.audio_guide2 = components.get("audio_guide2")
@@ -1632,6 +1654,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 self.image_refs if self.image_refs is not None else gr.State(None),
                 self.image_end if self.image_end is not None else gr.State(None),
                 self.video_guide if self.video_guide is not None else gr.State(None),
+                self.video_guide2 if self.video_guide2 is not None else gr.State(None),
                 self.video_source if self.video_source is not None else gr.State(None),
                 self.audio_guide if self.audio_guide is not None else gr.State(None),
                 self.audio_guide2 if self.audio_guide2 is not None else gr.State(None)
@@ -1639,7 +1662,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             active_media_components = [comp for comp in [
                 self.image_start, self.image_refs, self.image_end,
-                self.video_guide, self.video_source,
+                self.video_guide, self.video_guide2, self.video_source,
                 self.audio_guide, self.audio_guide2
             ] if comp is not None]
 
@@ -1652,7 +1675,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     show_progress="hidden"
                 )
 
-            def generate_reference_boilerplate(img_start, img_refs, img_end, vid_guide, vid_src, aud_guide, aud_guide2):
+            def generate_reference_boilerplate(img_start, img_refs, img_end, vid_guide, vid_guide2, vid_src, aud_guide, aud_guide2):
                 pic_idx = 0
                 subj_defs = []
                 ret_analyses = []
@@ -1681,7 +1704,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 if vid_guide is not None and str(vid_guide).strip() != "":
                     vid_idx += 1
-                    subj_defs.append(f"<Video {vid_idx}> provides motion / camera rhythm guidance.")
+                    subj_defs.append(f"<Video {vid_idx}> provides primary motion / camera rhythm guidance.")
+                    tasks.append("reference generation")
+
+                if vid_guide2 is not None and str(vid_guide2).strip() != "":
+                    vid_idx += 1
+                    subj_defs.append(f"<Video {vid_idx}> provides secondary motion / reference guidance.")
                     tasks.append("reference generation")
 
                 aud_idx = 0
