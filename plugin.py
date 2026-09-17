@@ -46,8 +46,8 @@ EXAMPLE_REWRITE = {
 }
 
 DEFAULT_SETTINGS = {
-    "active_refs_display_mode": "text",  # "text" or "graphic"
-    "graphic_card_size": "medium",      # "small", "medium", "large"
+    "active_refs_display_mode": "text",
+    "graphic_card_size": "medium",
     "sync_from_combined_prompt": False,
 }
 
@@ -92,7 +92,6 @@ def parse_multisection_prompt(raw_text: str) -> Dict[str, str]:
     if not raw_text or not raw_text.strip():
         return result
 
-    # Decode any existing HTML entities (e.g. &#039;, &quot;) loaded from metadata
     text = html.unescape(raw_text).strip().replace("\r\n", "\n").replace("\r", "\n")
     pattern = r"(?im)^(subject_definitions|summary|retention_analysis|detailed_description|overall_soundscape|non_diegetic_music)\s*:\s*"
     
@@ -142,13 +141,14 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.8"
+        self.version = "1.0.9"
         self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
     def setup_ui(self):
         self.request_component("prompt")
         self.request_component("prompt_column_advanced")
+        self.request_component("prompt_column_wizard")
         self.request_component("image_refs")
         self.request_component("image_start")
         self.request_component("image_end")
@@ -165,7 +165,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
         self.request_global("get_model_def")
         self.request_global("server_config")
 
-        self.add_custom_js("""
+        self.add_custom_js(r"""
         (function() {
             window._activeRef2VARichEditor = null;
             window._ref2vaSyncingFromGradio = false;
@@ -218,11 +218,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 else if (/^<Picture/i.test(clean)) { cls = 'ref2va-badge-picture'; }
                 else if (/^<Video/i.test(clean)) { cls = 'ref2va-badge-video'; }
                 else if (/^<Audio/i.test(clean)) { cls = 'ref2va-badge-audio'; }
-                else if (/^\\(S/i.test(clean)) { cls = 'ref2va-badge-speaker'; }
+                else if (/^\(S/i.test(clean)) { cls = 'ref2va-badge-speaker'; }
                 else if (/^<d>/i.test(clean)) { cls = 'ref2va-badge-dialogue'; }
-                else if (/^\\[Shot/i.test(clean)) { cls = 'ref2va-badge-shot'; }
+                else if (/^\[Shot/i.test(clean)) { cls = 'ref2va-badge-shot'; }
                 else if (/^(fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)$/i.test(clean)) { cls = 'ref2va-badge-retention'; }
-                else if (/^\\[(reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\\]/i.test(clean)) { cls = 'ref2va-badge-task'; }
+                else if (/^\[(reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\]/i.test(clean)) { cls = 'ref2va-badge-task'; }
                 else if (/^<(scenetrans|cutoff)>/i.test(clean)) { cls = 'ref2va-badge-trans'; }
 
                 const esc = escapeHtml(clean);
@@ -244,7 +244,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             window.plainTextToRichHtml = function(text) {
                 if (!text) return '<div><br></div>';
                 text = decodeHtmlEntities(text);
-                const lines = text.split('\\n');
+                const lines = text.split('\n');
                 return lines.map(line => {
                     let esc = escapeHtml(line);
                     esc = esc.replace(/&lt;(Subject|Picture|Video|Audio)\s+(\d+)&gt;/gi, (m, k, n) => window.tagToInlineBadgeHtml(`<${k} ${n}>`));
@@ -252,7 +252,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     esc = esc.replace(/\[Shot\s+(\d+)([^\]]*)\]/gi, (m, n, rest) => window.tagToInlineBadgeHtml(`[Shot ${n}${rest}]`));
                     esc = esc.replace(/&lt;d&gt;([\s\S]*?)&lt;\/d&gt;/gi, (m, diag) => window.tagToInlineBadgeHtml(`<d>${decodeHtmlEntities(diag)}</d>`));
                     esc = esc.replace(/&lt;(scenetrans|cutoff)&gt;/gi, (m, t) => window.tagToInlineBadgeHtml(`<${t}>`));
-                    esc = esc.replace(/\\b(fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\\b/gi, (m) => window.tagToInlineBadgeHtml(m));
+                    esc = esc.replace(/\b(fully_preserved|partially_preserved|attribute_transfer|weak_reference|fully_copy|partially_copy|reference)\b/gi, (m) => window.tagToInlineBadgeHtml(m));
                     esc = esc.replace(/\[(reference generation|keyframe completion|video editing|video continuation|audio reuse|audio reference)\]/gi, (m, t) => window.tagToInlineBadgeHtml(`[${t}]`));
                     return `<div>${esc || '<br>'}</div>`;
                 }).join('');
@@ -267,10 +267,10 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         if (child.classList && child.classList.contains('ref2va-inline-badge')) {
                             text += child.textContent;
                         } else if (child.tagName === 'BR') {
-                            text += '\\n';
+                            text += '\n';
                         } else if (child.tagName === 'DIV' || child.tagName === 'P') {
                             const inner = window.extractPlainTextFromRichEditor(child);
-                            text += (text.length > 0 && !text.endsWith('\\n') ? '\\n' : '') + inner;
+                            text += (text.length > 0 && !text.endsWith('\n') ? '\n' : '') + inner;
                         } else {
                             text += window.extractPlainTextFromRichEditor(child);
                         }
@@ -377,67 +377,85 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
                 if (textarea && textarea.value !== plainText) {
                     const proto = window.HTMLTextAreaElement.prototype;
-                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                    nativeValueSetter.call(textarea, plainText);
+                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (nativeValueSetter) {
+                        nativeValueSetter.call(textarea, plainText);
+                    } else {
+                        textarea.value = plainText;
+                    }
                     textarea.dispatchEvent(new Event('input', { bubbles: true }));
                 }
 
-                window.assembleAndSyncAllSections();
+                window.assembleAndSyncAllSections(editor);
             };
 
-            window.assembleAndSyncAllSections = function() {
+            window.assembleAndSyncAllSections = function(sourceNode) {
+                const container = sourceNode ? sourceNode.closest('.ref2va-container') : (document.querySelector('.ref2va-container:not(.hidden)') || document.querySelector('.ref2va-container'));
+                if (!container) return;
+
                 const secNames = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
                 const blocks = [];
 
                 secNames.forEach(secName => {
-                    const editor = document.querySelector(`.ref2va-editor-${secName}`);
+                    const editor = container.querySelector(`.ref2va-editor-${secName}`);
                     if (editor) {
                         const val = window.extractPlainTextFromRichEditor(editor).trim();
                         if (val) {
-                            blocks.push(`${secName}:\\n${val}`);
+                            blocks.push(`${secName}:\n${val}`);
                         }
                     }
                 });
 
-                const assembled = blocks.join('\\n\\n');
-                const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced textarea') || document.querySelector('#wangp-prompt-advanced');
+                const assembled = blocks.join('\n\n');
+                const tabScope = container.closest('#edit') ? '#edit' : '#media_gen';
+                const tabEl = document.querySelector(tabScope) || document;
+                const mainPromptTextarea = tabEl.querySelector('#wangp-prompt-advanced textarea, #wangp-prompt-advanced, #wangp-prompt-wizard textarea, #wangp-prompt-wizard');
+
                 if (mainPromptTextarea && mainPromptTextarea.value !== assembled) {
                     window._ref2vaSyncSource = 'sections';
                     const proto = window.HTMLTextAreaElement.prototype;
-                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-                    nativeValueSetter.call(mainPromptTextarea, assembled);
+                    const nativeValueSetter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                    if (nativeValueSetter) {
+                        nativeValueSetter.call(mainPromptTextarea, assembled);
+                    } else {
+                        mainPromptTextarea.value = assembled;
+                    }
                     mainPromptTextarea.dispatchEvent(new Event('input', { bubbles: true }));
                 }
             };
 
             window.updateRichEditorsFromTextareas = function(force = false) {
+                const containers = document.querySelectorAll('.ref2va-container');
                 const secNames = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
-                secNames.forEach(secName => {
-                    const wrapper = document.querySelector(`.ref2va-wrapper-${secName}`);
-                    if (!wrapper) return;
-                    const textarea = wrapper.querySelector('.ref2va-hidden-gradio-input textarea');
-                    const richEditor = wrapper.querySelector(`.ref2va-editor-${secName}`);
-                    if (!textarea || !richEditor) return;
 
-                    if (!force && document.activeElement === richEditor) {
-                        return;
-                    }
+                containers.forEach(container => {
+                    secNames.forEach(secName => {
+                        const wrapper = container.querySelector(`.ref2va-wrapper-${secName}`);
+                        if (!wrapper) return;
+                        const textarea = wrapper.querySelector('.ref2va-hidden-gradio-input textarea');
+                        const richEditor = wrapper.querySelector(`.ref2va-editor-${secName}`);
+                        if (!textarea || !richEditor) return;
 
-                    const currentPlain = window.extractPlainTextFromRichEditor(richEditor).trim();
-                    const targetPlain = decodeHtmlEntities(textarea.value || '').trim();
+                        if (!force && document.activeElement === richEditor) {
+                            return;
+                        }
 
-                    if (!force && currentPlain === targetPlain) {
-                        return;
-                    }
+                        const currentPlain = window.extractPlainTextFromRichEditor(richEditor).trim();
+                        const targetPlain = decodeHtmlEntities(textarea.value || '').trim();
 
-                    richEditor.innerHTML = window.plainTextToRichHtml(targetPlain);
+                        if (!force && currentPlain === targetPlain) {
+                            return;
+                        }
+
+                        richEditor.innerHTML = window.plainTextToRichHtml(targetPlain);
+                    });
                 });
             };
 
             window.insertRef2VAText = function(tagStr, isWrap = false, wrapPrefix = '', wrapSuffix = '') {
                 let editor = window._activeRef2VARichEditor;
                 if (!editor || !document.body.contains(editor)) {
-                    editor = document.querySelector('.ref2va-editor-detailed_description') || document.querySelector('.ref2va-rich-editor');
+                    editor = document.querySelector('.ref2va-container:not(.hidden) .ref2va-editor-detailed_description') || document.querySelector('.ref2va-rich-editor');
                 }
 
                 if (!editor) return;
@@ -501,8 +519,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 return uniqueSrcs;
             }
 
-            function findContainerByKeywords(keywords) {
-                const labels = Array.from(document.querySelectorAll('.label, label, span[data-testid="block-label"], .gr-form-label, span.block, .form-label'));
+            function findContainerByKeywords(keywords, rootEl = document) {
+                const labels = Array.from(rootEl.querySelectorAll('.label, label, span[data-testid="block-label"], .gr-form-label, span.block, .form-label'));
                 for (const lbl of labels) {
                     if (lbl.closest('#plugin_guides') || lbl.closest('.tutorial') || lbl.closest('#gallery')) continue;
                     const text = (lbl.textContent || '').toLowerCase();
@@ -515,10 +533,26 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             }
 
             window.findWanGPMediaElement = function(mediaType, slotNum) {
+                const activeTab = document.querySelector('#edit') && document.querySelector('#edit').style.display !== 'none' && !document.querySelector('#edit').classList.contains('hidden')
+                    ? document.querySelector('#edit')
+                    : (document.querySelector('#media_gen') || document.body);
+
+                function getValidVideoSrc(elem) {
+                    if (!elem) return null;
+                    const vids = elem.querySelectorAll('video');
+                    for (const v of vids) {
+                        const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
+                        if (src && !src.includes('tutorial') && !src.includes('guide')) {
+                            return src;
+                        }
+                    }
+                    return null;
+                }
+
                 if (mediaType === 'picture') {
-                    const startContainer = findContainerByKeywords(['starting points', 'start image', 'start with image']);
-                    const refsContainer = findContainerByKeywords(['reference image', 'reference images', 'inject reference']);
-                    const endContainer = findContainerByKeywords(['end image', 'ending points']);
+                    const startContainer = findContainerByKeywords(['starting points', 'start image', 'start with image'], activeTab);
+                    const refsContainer = findContainerByKeywords(['reference image', 'reference images', 'inject reference'], activeTab);
+                    const endContainer = findContainerByKeywords(['end image', 'ending points'], activeTab);
 
                     const startImgs = getOrderedThumbnailsFromContainer(startContainer);
                     const refImgs = getOrderedThumbnailsFromContainer(refsContainer);
@@ -539,44 +573,41 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         return { src: endImgs[0], type: 'image', desc: 'End Image Anchor' };
                     }
                 } else if (mediaType === 'video') {
-                    const srcContainer = findContainerByKeywords(['video to continue', 'video source', 'source video']);
-                    const guideContainer = findContainerByKeywords(['control video', 'video guide']);
-                    const guide2Container = findContainerByKeywords(['control video 2', 'video guide 2']);
-
-                    const validContainers = [srcContainer, guideContainer, guide2Container].filter(Boolean);
-                    const discoveredVideos = [];
-
-                    for (const cont of validContainers) {
-                        if (cont.closest('#plugin_guides') || cont.closest('.tutorial-video')) continue;
-                        const vids = Array.from(cont.querySelectorAll('video')).filter(v => {
-                            return !v.closest('#gallery') && !v.closest('.ref2va-preview-card') && !v.closest('.ref2va-active-refs-mount');
-                        });
-                        for (const v of vids) {
-                            const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                            if (src && !src.includes('tutorial') && !src.includes('guide')) {
-                                discoveredVideos.push({ src: src, type: 'video' });
+                    if (slotNum === 1) {
+                        let src1 = null;
+                        const allVideoInputs = Array.from(activeTab.querySelectorAll('#video_input'));
+                        for (const inputEl of allVideoInputs) {
+                            const lbl = inputEl.querySelector('.label, label, span[data-testid="block-label"], .gr-form-label, span.block, .form-label');
+                            const lblText = (lbl ? lbl.textContent : '').toLowerCase();
+                            if (lblText.includes('control video') || lblText.includes('video guide')) {
+                                if (!lblText.includes('control video 2') && !lblText.includes('video guide 2')) {
+                                    src1 = getValidVideoSrc(inputEl);
+                                    if (src1) break;
+                                }
                             }
                         }
-                    }
-
-                    if (discoveredVideos.length === 0) {
-                        const genTab = document.querySelector('#media_gen') || document.querySelector('#tab_media_gen') || document.body;
-                        const vids = Array.from(genTab.querySelectorAll('#video_input video, #video_input2 video')).filter(v => {
-                            return !v.closest('#plugin_guides') && !v.closest('#gallery');
-                        });
-                        for (const v of vids) {
-                            const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                            if (src && !src.includes('tutorial')) {
-                                discoveredVideos.push({ src: src, type: 'video' });
+                        if (!src1) {
+                            for (const inputEl of allVideoInputs) {
+                                const s = getValidVideoSrc(inputEl);
+                                if (s) { src1 = s; break; }
                             }
                         }
-                    }
-
-                    if (slotNum >= 1 && slotNum <= discoveredVideos.length) {
-                        return discoveredVideos[slotNum - 1];
+                        if (src1) return { src: src1, type: 'video', desc: 'Control Video 1' };
+                    } else if (slotNum === 2) {
+                        const input2 = activeTab.querySelector('#video_input2');
+                        let src2 = getValidVideoSrc(input2);
+                        if (!src2) {
+                            const cont2 = findContainerByKeywords(['control video 2', 'video guide 2'], activeTab);
+                            src2 = getValidVideoSrc(cont2);
+                        }
+                        if (src2) return { src: src2, type: 'video', desc: 'Control Video 2' };
+                    } else if (slotNum === 3) {
+                        const srcBlock = findContainerByKeywords(['video to continue', 'video source', 'source video'], activeTab);
+                        const src3 = getValidVideoSrc(srcBlock);
+                        if (src3) return { src: src3, type: 'video', desc: 'Source Video' };
                     }
                 } else if (mediaType === 'audio') {
-                    const allAudioBlocks = Array.from(document.querySelectorAll('.audio-container, [data-testid="audio"], .gr-audio')).filter(el => {
+                    const allAudioBlocks = Array.from(activeTab.querySelectorAll('.audio-container, [data-testid="audio"], .gr-audio')).filter(el => {
                         return !el.closest('#gallery') && !el.closest('#audio') && !el.closest('.ref2va-preview-card') && !el.closest('.ref2va-active-refs-mount') && !el.closest('#plugin_guides');
                     });
 
@@ -591,7 +622,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         if (link && link.href) return { src: link.href, type: 'audio', desc: `Audio Track ${slotNum}` };
                     }
 
-                    const allAudios = Array.from(document.querySelectorAll('audio')).filter(a => {
+                    const allAudios = Array.from(activeTab.querySelectorAll('audio')).filter(a => {
                         return !a.closest('#gallery') && !a.closest('#audio') && !a.closest('.ref2va-preview-card') && !a.closest('.ref2va-active-refs-mount') && !a.closest('#plugin_guides');
                     });
                     const targetAudio = allAudios[slotNum - 1];
@@ -690,10 +721,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     const num = parseInt(rawTag.match(/\d+/)[0], 10);
                     header.innerHTML = `👤 <strong>&lt;Subject ${num}&gt;</strong> Definition`;
 
-                    const subjEditor = document.querySelector('.ref2va-editor-subject_definitions');
+                    const container = triggerEl.closest('.ref2va-container') || document;
+                    const subjEditor = container.querySelector('.ref2va-editor-subject_definitions');
                     let defText = "";
                     if (subjEditor) {
-                        const lines = window.extractPlainTextFromRichEditor(subjEditor).split('\\n');
+                        const lines = window.extractPlainTextFromRichEditor(subjEditor).split('\n');
                         for (let line of lines) {
                             if (line.toLowerCase().includes(`<subject ${num}>`)) {
                                 defText = line.trim();
@@ -708,7 +740,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         desc.textContent = defText;
                         body.appendChild(desc);
 
-                        const picRefMatch = defText.match(/<Picture\\s+(\\d+)>/i);
+                        const picRefMatch = defText.match(/<Picture\s+(\d+)>/i);
                         if (picRefMatch) {
                             const pNum = parseInt(picRefMatch[1], 10);
                             const pMedia = window.findWanGPMediaElement('picture', pNum);
@@ -725,7 +757,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     }
                 } else if (/^\[Shot\s+\d+/i.test(rawTag)) {
                     header.innerHTML = `🎬 <strong>${rawTag}</strong> Shot Breakdown`;
-                    const detEditor = document.querySelector('.ref2va-editor-detailed_description');
+                    const container = triggerEl.closest('.ref2va-container') || document;
+                    const detEditor = container.querySelector('.ref2va-editor-detailed_description');
                     let shotText = "";
                     if (detEditor) {
                         const val = window.extractPlainTextFromRichEditor(detEditor);
@@ -747,7 +780,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 } else if (/^<d>/i.test(rawTag)) {
                     header.innerHTML = `💬 <strong>Dialogue Line</strong>`;
                     const cleanDialogue = rawTag.replace(/<\/?d>/g, '').trim();
-                    const words = cleanDialogue.replace(/\[[^\]]+\]/g, '').trim().split(/\\s+/).filter(Boolean);
+                    const words = cleanDialogue.replace(/\[[^\]]+\]/g, '').trim().split(/\s+/).filter(Boolean);
                     const estimatedSeconds = Math.max(1.5, (words.length / 2.6)).toFixed(1);
 
                     body.innerHTML = `
@@ -758,10 +791,11 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     `;
                 } else if (/^\(S\d+\)/i.test(rawTag)) {
                     header.innerHTML = `🗣️ <strong>${rawTag}</strong> Speaker Profile`;
-                    const subjEditor = document.querySelector('.ref2va-editor-subject_definitions');
+                    const container = triggerEl.closest('.ref2va-container') || document;
+                    const subjEditor = container.querySelector('.ref2va-editor-subject_definitions');
                     let speakerRole = "";
                     if (subjEditor) {
-                        const lines = window.extractPlainTextFromRichEditor(subjEditor).split('\\n');
+                        const lines = window.extractPlainTextFromRichEditor(subjEditor).split('\n');
                         for (let line of lines) {
                             if (line.includes(rawTag)) {
                                 speakerRole = line.trim();
@@ -821,10 +855,9 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }
             });
 
-            // Live Active Reference Bar Generator (Up to 9 pictures, No Hover Popups in Graphic Mode)
             window.refreshActiveReferencesBar = function() {
-                const barContainer = document.querySelector('.ref2va-active-refs-mount');
-                if (!barContainer) return;
+                const barContainers = document.querySelectorAll('.ref2va-active-refs-mount');
+                if (!barContainers.length) return;
 
                 const settingsInput = document.querySelector('.ref2va-settings-json-input textarea');
                 if (settingsInput && settingsInput.value) {
@@ -858,133 +891,154 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }
 
                 const cacheKey = detected.map(d => `${d.tag}:${d.media.src}`).join('|') + `|mode:${displayMode}|size:${cardSize}`;
-                if (barContainer.dataset.renderedCache === cacheKey) {
-                    return;
-                }
-                barContainer.dataset.renderedCache = cacheKey;
 
-                if (detected.length === 0) {
-                    barContainer.innerHTML = '';
-                    barContainer.style.display = 'none';
-                    return;
-                }
-
-                barContainer.style.display = 'flex';
-                barContainer.innerHTML = '';
-
-                const labelSpan = document.createElement('span');
-                labelSpan.className = 'ref2va-tag-label';
-                labelSpan.style.color = '#10b981';
-                labelSpan.textContent = '⚡ Active References:';
-                barContainer.appendChild(labelSpan);
-
-                const itemsWrapper = document.createElement('div');
-                itemsWrapper.className = `ref2va-refs-items-wrapper mode-${displayMode} size-${cardSize}`;
-                barContainer.appendChild(itemsWrapper);
-
-                detected.forEach(item => {
-                    if (displayMode === 'graphic') {
-                        const card = document.createElement('div');
-                        card.className = `ref2va-graphic-card size-${cardSize}`;
-                        
-                        const mediaWrapper = document.createElement('div');
-                        mediaWrapper.className = 'ref2va-graphic-media-wrapper';
-
-                        if (item.type === 'picture') {
-                            const img = document.createElement('img');
-                            img.src = item.media.src;
-                            img.className = 'ref2va-graphic-img';
-                            mediaWrapper.appendChild(img);
-                            img.onclick = () => window.insertRef2VAText(item.tag);
-                        } else if (item.type === 'video') {
-                            const vid = document.createElement('video');
-                            vid.src = item.media.src;
-                            vid.controls = true;
-                            vid.autoplay = false;
-                            vid.preload = "metadata";
-                            vid.className = 'ref2va-graphic-video';
-                            mediaWrapper.appendChild(vid);
-                        } else if (item.type === 'audio') {
-                            const audBox = document.createElement('div');
-                            audBox.className = 'ref2va-graphic-audio-box';
-                            audBox.innerHTML = '<span style="font-size:16px;">🔊</span>';
-                            const aud = document.createElement('audio');
-                            aud.src = item.media.src;
-                            aud.controls = true;
-                            aud.autoplay = false;
-                            aud.preload = "metadata";
-                            aud.className = 'ref2va-graphic-audio-ctrl';
-                            audBox.appendChild(aud);
-                            mediaWrapper.appendChild(audBox);
-                        }
-
-                        const insertBtn = document.createElement('button');
-                        insertBtn.className = 'ref2va-graphic-insert-btn';
-                        insertBtn.textContent = item.tag;
-                        insertBtn.title = `Insert ${item.tag} into active section`;
-                        insertBtn.onclick = () => window.insertRef2VAText(item.tag);
-
-                        card.appendChild(mediaWrapper);
-                        card.appendChild(insertBtn);
-                        itemsWrapper.appendChild(card);
-                    } else {
-                        const btn = document.createElement('button');
-                        btn.className = 'ref2va-btn ref2va-btn-ref';
-                        btn.textContent = item.label;
-                        btn.onclick = () => window.insertRef2VAText(item.tag);
-                        btn.onmouseenter = (e) => window.onTagMouseEnter(btn, e);
-                        btn.onmouseleave = (e) => window.onTagMouseLeave(e);
-                        itemsWrapper.appendChild(btn);
+                barContainers.forEach(barContainer => {
+                    if (barContainer.dataset.renderedCache === cacheKey) {
+                        return;
                     }
+                    barContainer.dataset.renderedCache = cacheKey;
+
+                    if (detected.length === 0) {
+                        barContainer.innerHTML = '';
+                        barContainer.style.display = 'none';
+                        return;
+                    }
+
+                    barContainer.style.display = 'flex';
+                    barContainer.innerHTML = '';
+
+                    const labelSpan = document.createElement('span');
+                    labelSpan.className = 'ref2va-tag-label';
+                    labelSpan.style.color = '#10b981';
+                    labelSpan.textContent = '⚡ Active References:';
+                    barContainer.appendChild(labelSpan);
+
+                    const itemsWrapper = document.createElement('div');
+                    itemsWrapper.className = `ref2va-refs-items-wrapper mode-${displayMode} size-${cardSize}`;
+                    barContainer.appendChild(itemsWrapper);
+
+                    detected.forEach(item => {
+                        if (displayMode === 'graphic') {
+                            const card = document.createElement('div');
+                            card.className = `ref2va-graphic-card size-${cardSize}`;
+                            
+                            const mediaWrapper = document.createElement('div');
+                            mediaWrapper.className = 'ref2va-graphic-media-wrapper';
+
+                            if (item.type === 'picture') {
+                                const img = document.createElement('img');
+                                img.src = item.media.src;
+                                img.className = 'ref2va-graphic-img';
+                                mediaWrapper.appendChild(img);
+                                img.onclick = () => window.insertRef2VAText(item.tag);
+                            } else if (item.type === 'video') {
+                                const vid = document.createElement('video');
+                                vid.src = item.media.src;
+                                vid.autoplay = false;
+                                vid.preload = "metadata";
+                                vid.controls = false;
+                                vid.className = 'ref2va-graphic-video';
+                                mediaWrapper.appendChild(vid);
+
+                                card.addEventListener('mouseenter', () => { vid.controls = true; });
+                                card.addEventListener('mouseleave', () => { vid.controls = false; });
+                            } else if (item.type === 'audio') {
+                                const audBox = document.createElement('div');
+                                audBox.className = 'ref2va-graphic-audio-box';
+                                audBox.innerHTML = '<span class="ref2va-audio-icon" style="font-size:20px;">🔊</span>';
+                                const aud = document.createElement('audio');
+                                aud.src = item.media.src;
+                                aud.autoplay = false;
+                                aud.preload = "metadata";
+                                aud.controls = false;
+                                aud.className = 'ref2va-graphic-audio-ctrl';
+                                audBox.appendChild(aud);
+                                mediaWrapper.appendChild(audBox);
+
+                                card.addEventListener('mouseenter', () => {
+                                    aud.controls = true;
+                                    const icon = audBox.querySelector('.ref2va-audio-icon');
+                                    if (icon) icon.style.display = 'none';
+                                });
+                                card.addEventListener('mouseleave', () => {
+                                    aud.controls = false;
+                                    const icon = audBox.querySelector('.ref2va-audio-icon');
+                                    if (icon) icon.style.display = '';
+                                });
+                            }
+
+                            const insertBtn = document.createElement('button');
+                            insertBtn.className = 'ref2va-graphic-insert-btn';
+                            insertBtn.textContent = item.tag;
+                            insertBtn.title = `Insert ${item.tag} into active section`;
+                            insertBtn.onclick = () => window.insertRef2VAText(item.tag);
+
+                            card.appendChild(mediaWrapper);
+                            card.appendChild(insertBtn);
+                            itemsWrapper.appendChild(card);
+                        } else {
+                            const btn = document.createElement('button');
+                            btn.className = 'ref2va-btn ref2va-btn-ref';
+                            btn.textContent = item.label;
+                            btn.onclick = () => window.insertRef2VAText(item.tag);
+                            btn.onmouseenter = (e) => window.onTagMouseEnter(btn, e);
+                            btn.onmouseleave = (e) => window.onTagMouseLeave(e);
+                            itemsWrapper.appendChild(btn);
+                        }
+                    });
                 });
             };
 
             window.setupAllRichEditors = function() {
+                const containers = document.querySelectorAll('.ref2va-container');
                 const secNames = ['subject_definitions', 'summary', 'retention_analysis', 'detailed_description', 'overall_soundscape', 'non_diegetic_music'];
 
-                secNames.forEach(secName => {
-                    const wrapper = document.querySelector(`.ref2va-wrapper-${secName}`);
-                    if (!wrapper) return;
+                containers.forEach(container => {
+                    secNames.forEach(secName => {
+                        const wrapper = container.querySelector(`.ref2va-wrapper-${secName}`);
+                        if (!wrapper) return;
 
-                    const textarea = wrapper.querySelector('.ref2va-hidden-gradio-input textarea');
-                    if (!textarea) return;
+                        const textarea = wrapper.querySelector('.ref2va-hidden-gradio-input textarea');
+                        if (!textarea) return;
 
-                    let richEditor = wrapper.querySelector(`.ref2va-editor-${secName}`);
-                    if (!richEditor) {
-                        richEditor = document.createElement('div');
-                        richEditor.className = `ref2va-rich-editor ref2va-editor-${secName}`;
-                        richEditor.contentEditable = 'true';
-                        richEditor.spellcheck = false;
+                        let richEditor = wrapper.querySelector(`.ref2va-editor-${secName}`);
+                        if (!richEditor) {
+                            richEditor = document.createElement('div');
+                            richEditor.className = `ref2va-rich-editor ref2va-editor-${secName}`;
+                            richEditor.contentEditable = 'true';
+                            richEditor.spellcheck = false;
 
-                        richEditor.innerHTML = window.plainTextToRichHtml(textarea.value);
+                            richEditor.innerHTML = window.plainTextToRichHtml(textarea.value);
 
-                        richEditor.addEventListener('focus', () => {
-                            window._activeRef2VARichEditor = richEditor;
-                        });
+                            richEditor.addEventListener('focus', () => {
+                                window._activeRef2VARichEditor = richEditor;
+                            });
 
-                        richEditor.addEventListener('input', () => {
-                            window.normalizeBadgesInEditor(richEditor);
-                            window.syncRichEditorToGradio(richEditor);
-                        });
+                            richEditor.addEventListener('input', () => {
+                                window.normalizeBadgesInEditor(richEditor);
+                                window.syncRichEditorToGradio(richEditor);
+                            });
 
-                        wrapper.appendChild(richEditor);
-                    }
+                            wrapper.appendChild(richEditor);
+                        }
+                    });
                 });
             };
 
             window.updateMainPromptAccordionState = function(isMinimax) {
-                const mainPromptTextarea = document.querySelector('#wangp-prompt-advanced');
-                const studioContainer = document.querySelector('.ref2va-container');
+                const activeTab = document.querySelector('#edit') && document.querySelector('#edit').style.display !== 'none' && !document.querySelector('#edit').classList.contains('hidden')
+                    ? document.querySelector('#edit')
+                    : (document.querySelector('#media_gen') || document.body);
+
+                const mainPromptTextarea = activeTab.querySelector('#wangp-prompt-advanced') || activeTab.querySelector('#wangp-prompt-wizard');
                 if (!mainPromptTextarea) return;
 
                 const column = mainPromptTextarea.closest('.wangp-prompt-tools-stack') || mainPromptTextarea;
-                let drawer = document.querySelector('.ref2va-raw-prompt-drawer');
+                let drawer = column.previousElementSibling;
+                const exists = drawer && drawer.classList.contains('ref2va-raw-prompt-drawer');
 
                 if (isMinimax) {
-                    if (!drawer) {
-                        const outerParent = column.parentElement;
-                        if (!outerParent) return;
-
+                    if (!exists) {
                         drawer = document.createElement('details');
                         drawer.className = 'ref2va-raw-prompt-drawer';
                         drawer.open = false;
@@ -994,33 +1048,19 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         summary.innerHTML = '<span>📝 <strong>Combined Main Prompt (Read/Write)</strong></span>';
                         drawer.appendChild(summary);
 
-                        const content = document.createElement('div');
-                        content.className = 'ref2va-raw-prompt-content';
-                        drawer.appendChild(content);
-
-                        outerParent.insertBefore(drawer, column);
-                        content.appendChild(column);
+                        column.parentElement.insertBefore(drawer, column);
+                        column.style.display = drawer.open ? '' : 'none';
+                        drawer.addEventListener('toggle', () => {
+                            column.style.display = drawer.open ? '' : 'none';
+                        });
                     } else {
                         drawer.style.display = '';
-                    }
-
-                    if (studioContainer && drawer.parentElement) {
-                        if (drawer.nextElementSibling !== studioContainer) {
-                            drawer.parentElement.insertBefore(studioContainer, drawer.nextSibling);
-                        }
+                        column.style.display = drawer.open ? '' : 'none';
                     }
                 } else {
-                    if (drawer) {
-                        const drawerParent = drawer.parentElement;
-                        if (drawerParent) {
-                            drawerParent.insertBefore(column, drawer);
-                            drawer.remove();
-                        }
-                    }
-                    if (studioContainer && column.parentElement) {
-                        if (column.nextElementSibling !== studioContainer) {
-                            column.parentElement.insertBefore(studioContainer, column.nextSibling);
-                        }
+                    if (exists) {
+                        drawer.style.display = 'none';
+                        column.style.display = '';
                     }
                 }
             };
@@ -1053,31 +1093,39 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
         """)
 
     def post_ui_setup(self, components: Dict[str, gr.components.Component]):
-        self.main_prompt = components.get("prompt")
-        self.prompt_column_advanced = components.get("prompt_column_advanced")
-        self.image_refs = components.get("image_refs")
-        self.image_start = components.get("image_start")
-        self.image_end = components.get("image_end")
-        self.video_guide = components.get("video_guide")
-        self.video_guide2 = components.get("video_guide2")
-        self.video_source = components.get("video_source")
-        self.audio_guide = components.get("audio_guide")
-        self.audio_guide2 = components.get("audio_guide2")
-        self.settings_file = components.get("settings_file")
-        self.model_choice_target = components.get("model_choice_target")
-        self.refresh_form_trigger = components.get("refresh_form_trigger")
-        self.state_component = components.get("state")
+        main_prompt = components.get("prompt")
+        prompt_column_advanced = components.get("prompt_column_advanced")
+        prompt_column_wizard = components.get("prompt_column_wizard")
+        image_refs = components.get("image_refs")
+        image_start = components.get("image_start")
+        image_end = components.get("image_end")
+        video_guide = components.get("video_guide")
+        video_guide2 = components.get("video_guide2")
+        video_source = components.get("video_source")
+        audio_guide = components.get("audio_guide")
+        audio_guide2 = components.get("audio_guide2")
+        settings_file = components.get("settings_file")
+        model_choice_target = components.get("model_choice_target")
+        refresh_form_trigger = components.get("refresh_form_trigger")
+        state_component = components.get("state")
 
         initial_model = ""
         if hasattr(self, "server_config") and isinstance(self.server_config, dict):
             initial_model = self.server_config.get("last_model_type", "")
         
-        initial_visible = is_minimax_model(initial_model)
+        base_type = ""
+        if hasattr(self, "get_base_model_type") and callable(self.get_base_model_type):
+            base_type = self.get_base_model_type(initial_model) or ""
+
+        initial_visible = is_minimax_model(initial_model, base_type)
         loaded_settings = load_settings()
 
         def create_studio_ui():
             custom_css = """
             <style>
+            .ref2va-graphic-card:not(:hover) .ref2va-graphic-audio-ctrl {
+                display: none !important;
+            }
             .ref2va-container {
                 border: 1px solid rgba(59, 130, 246, 0.35);
                 background: transparent;
@@ -1112,6 +1160,23 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 align-items: center;
                 gap: 6px;
                 line-height: 1.2;
+            }
+            .ref2va-raw-prompt-toggle {
+                display: flex;
+                align-items: center;
+                gap: 6px;
+                padding: 5px 8px;
+                margin-bottom: 4px;
+                border: 1px solid var(--border-color-primary, rgba(128, 128, 128, 0.25));
+                border-radius: 6px;
+                background: var(--background-fill-secondary, rgba(128, 128, 128, 0.08));
+                font-size: 11.5px;
+                font-weight: 600;
+                cursor: pointer;
+                user-select: none;
+            }
+            .ref2va-prompt-collapsed {
+                display: none !important;
             }
             .ref2va-settings-drawer {
                 border: 1px solid rgba(59, 130, 246, 0.45);
@@ -1273,11 +1338,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 align-items: center !important;
                 background: var(--background-fill-secondary, rgba(128, 128, 128, 0.08)) !important;
             }
-            .ref2va-raw-prompt-content {
-                padding: 6px 8px !important;
-            }
 
-            /* Symmetrical Uniform Grid for All 6 Prompt Sections */
             .ref2va-grid-row {
                 display: flex;
                 gap: 8px;
@@ -1491,7 +1552,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             with gr.Column(visible=initial_visible, elem_classes=["ref2va-container"]) as ref2va_main_container:
                 gr.HTML(custom_css)
                 
-                # Header Bar (Zero Whitespace)
                 with gr.Row(elem_classes=["ref2va-header-bar"]):
                     gr.HTML("<div class='ref2va-header-title'>🎬 MiniMax H3 Ref2VA Prompt Studio</div>")
                     with gr.Row():
@@ -1500,7 +1560,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         load_example_btn = gr.Button("📋 Load Example", size="sm", min_width=120)
                         clear_all_btn = gr.Button("🧹 Clear All", size="sm", min_width=75)
 
-                # Settings Panel State & Container
                 settings_open_state = gr.State(False)
                 with gr.Column(visible=False, elem_classes=["ref2va-settings-drawer"]) as settings_panel:
                     gr.Markdown("#### ⚙️ MiniMax Ref2VA Studio Settings")
@@ -1526,7 +1585,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         )
                     settings_json_bridge = gr.Textbox(value=json.dumps(loaded_settings), visible=False, elem_classes=["ref2va-settings-json-input"])
 
-                # 1. Full Tag Palette (Manual Insertions - Up to 9 pictures)
                 with gr.Accordion("🏷️ Full Tag Palette (Manual Insertions)", open=False):
                     with gr.Row(elem_classes=["ref2va-toolbar-group"]):
                         gr.HTML("<span class='ref2va-tag-label'>Subjects:</span>")
@@ -1586,10 +1644,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                             bt = gr.Button(task, size="sm", elem_classes=["ref2va-btn"])
                             bt.click(fn=None, js=f"() => window.insertRef2VAText('{task} ')")
 
-                # 2. Dynamic Active Reference Assets Bar
                 gr.HTML("<div class='ref2va-active-refs-mount'></div>")
 
-                # 3. Symmetrical 6 Section Rich Editors Grid (Exact Same Size: 160px height)
                 with gr.Row(elem_classes=["ref2va-grid-row"]):
                     with gr.Column(elem_classes=["ref2va-rich-field-wrapper", "ref2va-wrapper-subject_definitions"]):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['subject_definitions']}</div>")
@@ -1614,7 +1670,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         gr.HTML(f"<div class='ref2va-field-label'>{SECTION_DISPLAY_NAMES['non_diegetic_music']}</div>")
                         sec_music = gr.Textbox(value="", lines=6, elem_classes=["ref2va-hidden-gradio-input"])
 
-            # Settings Event Listeners
+                model_active_flag = gr.Checkbox(value=initial_visible, visible=False)
+
             def toggle_settings_drawer(is_open: bool):
                 new_state = not is_open
                 return new_state, gr.update(visible=new_state)
@@ -1648,22 +1705,21 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => window.refreshActiveReferencesBar()"
                 )
 
-            # Auto-generate boilerplate based on active references (up to 9 pictures)
             media_inputs = [
-                self.image_start if self.image_start is not None else gr.State(None),
-                self.image_refs if self.image_refs is not None else gr.State(None),
-                self.image_end if self.image_end is not None else gr.State(None),
-                self.video_guide if self.video_guide is not None else gr.State(None),
-                self.video_guide2 if self.video_guide2 is not None else gr.State(None),
-                self.video_source if self.video_source is not None else gr.State(None),
-                self.audio_guide if self.audio_guide is not None else gr.State(None),
-                self.audio_guide2 if self.audio_guide2 is not None else gr.State(None)
+                image_start if image_start is not None else gr.State(None),
+                image_refs if image_refs is not None else gr.State(None),
+                image_end if image_end is not None else gr.State(None),
+                video_guide if video_guide is not None else gr.State(None),
+                video_guide2 if video_guide2 is not None else gr.State(None),
+                video_source if video_source is not None else gr.State(None),
+                audio_guide if audio_guide is not None else gr.State(None),
+                audio_guide2 if audio_guide2 is not None else gr.State(None)
             ]
 
             active_media_components = [comp for comp in [
-                self.image_start, self.image_refs, self.image_end,
-                self.video_guide, self.video_guide2, self.video_source,
-                self.audio_guide, self.audio_guide2
+                image_start, image_refs, image_end,
+                video_guide, video_guide2, video_source,
+                audio_guide, audio_guide2
             ] if comp is not None]
 
             for comp in active_media_components:
@@ -1695,6 +1751,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         subj_defs.append(f"<Subject {subj_num}> is the character/content in <Picture {pic_idx}>, preserving identity and clothing.")
                         ret_analyses.append(f"<Subject {subj_num}> (appears in [Shot 1]): fully_preserved - key appearance features retained.")
                     tasks.append("reference generation")
+
+                if img_end is not None and str(img_end).strip() != "":
+                    pic_idx += 1
+                    subj_defs.append(f"<Picture {pic_idx}> is the ending keyframe anchor.")
+                    ret_analyses.append(f"<Picture {pic_idx}> (ending frame): fully_preserved - target end state preserved.")
+                    tasks.append("keyframe completion")
 
                 vid_idx = 0
                 if vid_src is not None and str(vid_src).strip() != "":
@@ -1735,7 +1797,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             ).then(
                 fn=assemble_multisection_prompt,
                 inputs=[sec_subject_defs, sec_summary, sec_retention, sec_detailed, sec_soundscape, sec_music],
-                outputs=self.main_prompt if self.main_prompt is not None else []
+                outputs=main_prompt if main_prompt is not None else []
             ).then(
                 fn=None,
                 inputs=None,
@@ -1743,19 +1805,17 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 js="() => window.updateRichEditorsFromTextareas(true)"
             )
 
-            # Synchronized Prompt Handling
             section_inputs = [sec_subject_defs, sec_summary, sec_retention, sec_detailed, sec_soundscape, sec_music]
 
-            if self.main_prompt is not None:
+            if main_prompt is not None:
                 for sec in section_inputs:
                     sec.input(
                         fn=assemble_multisection_prompt,
                         inputs=section_inputs,
-                        outputs=self.main_prompt,
+                        outputs=main_prompt,
                         show_progress="hidden"
                     )
 
-            # Sync from combined prompt back to separate sections (controlled strictly by setting)
             def on_external_main_prompt_change(raw_val, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
                 current_settings = load_settings()
                 if not current_settings.get("sync_from_combined_prompt", False):
@@ -1776,7 +1836,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     parsed["non_diegetic_music"],
                 )
 
-            # Explicit file upload / preset load parser
             def on_form_reload_or_file_load(raw_val, s_def, s_sum, s_ret, s_det, s_snd, s_mus):
                 prompt_text = raw_val or ""
                 parsed = parse_multisection_prompt(prompt_text)
@@ -1789,10 +1848,10 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     parsed["non_diegetic_music"],
                 )
 
-            if self.main_prompt is not None:
-                self.main_prompt.change(
+            if main_prompt is not None:
+                main_prompt.change(
                     fn=on_external_main_prompt_change,
-                    inputs=[self.main_prompt] + section_inputs,
+                    inputs=[main_prompt] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1802,10 +1861,10 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => { window.updateRichEditorsFromTextareas(false); window.refreshActiveReferencesBar(); }"
                 )
 
-            if self.refresh_form_trigger is not None:
-                self.refresh_form_trigger.change(
+            if refresh_form_trigger is not None:
+                refresh_form_trigger.change(
                     fn=on_form_reload_or_file_load,
-                    inputs=[self.main_prompt if self.main_prompt is not None else gr.State("")] + section_inputs,
+                    inputs=[main_prompt if main_prompt is not None else gr.State("")] + section_inputs,
                     outputs=section_inputs,
                     show_progress="hidden"
                 ).then(
@@ -1815,12 +1874,12 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 200); }"
                 )
 
-            if self.settings_file is not None:
-                self.settings_file.upload(
+            if settings_file is not None:
+                settings_file.upload(
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(() => { window.refreshActiveReferencesBar(); }, 500); }",
+                    js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 500); }",
                     show_progress="hidden"
                 )
 
@@ -1846,7 +1905,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             load_example_btn.click(
                 fn=load_example,
                 inputs=None,
-                outputs=section_inputs + ([self.main_prompt] if self.main_prompt is not None else [])
+                outputs=section_inputs + ([main_prompt] if main_prompt is not None else [])
             ).then(
                 fn=None,
                 inputs=None,
@@ -1860,7 +1919,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             clear_all_btn.click(
                 fn=clear_all,
                 inputs=None,
-                outputs=section_inputs + ([self.main_prompt] if self.main_prompt is not None else [])
+                outputs=section_inputs + ([main_prompt] if main_prompt is not None else [])
             ).then(
                 fn=None,
                 inputs=None,
@@ -1874,7 +1933,6 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 }"""
             )
 
-            # Model switch listener (Wraps prompt drawer ONLY if Minimax)
             def on_model_target_change(target_val):
                 model_name = str(target_val or "").split("|")[0].strip()
                 base_type = ""
@@ -1884,12 +1942,32 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                 is_active = is_minimax_model(model_name, base_type)
                 return gr.update(visible=is_active), is_active
 
-            model_active_flag = gr.Checkbox(value=initial_visible, visible=False)
+            def on_edit_task_change(cur_state):
+                m_type = (cur_state or {}).get("edit_model_type") or (cur_state or {}).get("model_type") or ""
+                base_type = ""
+                if hasattr(self, "get_base_model_type") and callable(self.get_base_model_type):
+                    base_type = self.get_base_model_type(m_type) or ""
+                is_active = is_minimax_model(m_type, base_type)
+                return gr.update(visible=is_active), is_active
 
-            if self.model_choice_target is not None:
-                self.model_choice_target.change(
+            is_main_tab = model_choice_target is not None and getattr(model_choice_target, "elem_id", None) == "wangp_model_choice_target"
+
+            if is_main_tab:
+                model_choice_target.change(
                     fn=on_model_target_change,
-                    inputs=[self.model_choice_target],
+                    inputs=[model_choice_target],
+                    outputs=[ref2va_main_container, model_active_flag],
+                    show_progress="hidden"
+                ).then(
+                    fn=None,
+                    inputs=[model_active_flag],
+                    outputs=None,
+                    js="(isMinimax) => { window.updateMainPromptAccordionState(Boolean(isMinimax)); window.setupAllRichEditors(); setTimeout(window.refreshActiveReferencesBar, 250); }"
+                )
+            elif main_prompt is not None and state_component is not None:
+                main_prompt.change(
+                    fn=on_edit_task_change,
+                    inputs=[state_component],
                     outputs=[ref2va_main_container, model_active_flag],
                     show_progress="hidden"
                 ).then(
@@ -1902,7 +1980,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
             self.ref2va_container = ref2va_main_container
             return ref2va_main_container
 
-        target_id = "prompt_column_advanced" if self.prompt_column_advanced is not None else "prompt"
+        target_id = "prompt_column_wizard" if prompt_column_wizard is not None else ("prompt_column_advanced" if prompt_column_advanced is not None else "prompt")
         self.insert_after(
             target_component_id=target_id,
             new_component_constructor=create_studio_ui
