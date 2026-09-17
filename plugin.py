@@ -141,7 +141,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
     def __init__(self):
         super().__init__()
         self.name = "MiniMax Ref2VA Prompt Studio"
-        self.version = "1.0.9"
+        self.version = "1.1.0"
         self.description = "Splits prompts into symmetrical section editors, provides live active reference previews (text & interactive media cards), hover popups, tag insertion palette, and persistent settings."
         self.type = ["extension"]
 
@@ -499,18 +499,17 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
 
             function getOrderedThumbnailsFromContainer(container) {
                 if (!container) return [];
-                let imgs = Array.from(container.querySelectorAll('.thumbnails img, button.thumbnail-item img, .grid-wrap img, .thumbnail-item img'));
+                let imgs = Array.from(container.querySelectorAll('.thumbnails img, button.thumbnail-item img, .grid-wrap img, .thumbnail-item img, .thumbnail-small img'));
                 if (imgs.length === 0) {
                     imgs = Array.from(container.querySelectorAll('img')).filter(i => {
-                        return !i.closest('.preview') && !i.closest('#gallery') && !i.closest('#plugin_guides') && !i.closest('.tutorial');
+                        return !i.closest('#gallery') && !i.closest('#plugin_guides') && !i.closest('.tutorial') && !i.closest('.ref2va-container');
                     });
                 }
                 const uniqueSrcs = [];
                 const seen = new Set();
                 for (const img of imgs) {
                     const src = img.currentSrc || img.src || img.getAttribute('src');
-                    if (!src) continue;
-                    if (src.includes('data:image/svg') || src.includes('/icons/') || src.includes('favicon')) continue;
+                    if (!src || src.includes('data:image/svg') || src.includes('/icons/') || src.includes('favicon')) continue;
                     if (!seen.has(src)) {
                         seen.add(src);
                         uniqueSrcs.push(src);
@@ -541,8 +540,9 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     if (!elem) return null;
                     const vids = elem.querySelectorAll('video');
                     for (const v of vids) {
+                        if (v.closest('#plugin_guides') || v.closest('#gallery') || v.closest('.ref2va-preview-card')) continue;
                         const src = v.currentSrc || v.src || (v.querySelector('source') ? v.querySelector('source').src : null);
-                        if (src && !src.includes('tutorial') && !src.includes('guide')) {
+                        if (src && !src.includes('tutorial')) {
                             return src;
                         }
                     }
@@ -594,12 +594,8 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                         }
                         if (src1) return { src: src1, type: 'video', desc: 'Control Video 1' };
                     } else if (slotNum === 2) {
-                        const input2 = activeTab.querySelector('#video_input2');
-                        let src2 = getValidVideoSrc(input2);
-                        if (!src2) {
-                            const cont2 = findContainerByKeywords(['control video 2', 'video guide 2'], activeTab);
-                            src2 = getValidVideoSrc(cont2);
-                        }
+                        const guide2 = activeTab.querySelector('#video_input2') || findContainerByKeywords(['control video 2', 'video guide 2'], activeTab);
+                        const src2 = getValidVideoSrc(guide2);
                         if (src2) return { src: src2, type: 'video', desc: 'Control Video 2' };
                     } else if (slotNum === 3) {
                         const srcBlock = findContainerByKeywords(['video to continue', 'video source', 'source video'], activeTab);
@@ -1871,7 +1867,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 200); }"
+                    js="() => { [200, 600, 1200, 2200].forEach(d => setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, d)); }"
                 )
 
             if settings_file is not None:
@@ -1879,7 +1875,7 @@ class MiniMaxRef2VAHelperPlugin(WAN2GPPlugin):
                     fn=None,
                     inputs=None,
                     outputs=None,
-                    js="() => { setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, 500); }",
+                    js="() => { [300, 800, 1500, 2500].forEach(d => setTimeout(() => { window.updateRichEditorsFromTextareas(true); window.refreshActiveReferencesBar(); }, d)); }",
                     show_progress="hidden"
                 )
 
